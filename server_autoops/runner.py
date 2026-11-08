@@ -179,7 +179,9 @@ def _bridge_dir(parent: str | None = None) -> Path:
     AF_UNIX paths are limited to ~107 bytes, so the socket cannot live under a deep run
     directory. It goes to a fresh mkdtemp directory under /run (or /tmp), is bind-mounted
     read-only into the agent, and is removed when the run ends."""
-    base = parent or ("/run" if os.access("/run", os.W_OK) else None)
+    base = parent or ("/run" if os.access("/run", os.W_OK) else tempfile.gettempdir())
+    # Resolve symlinks first (OpenWrt: /run -> /tmp/run); the broker refuses symlinked parents.
+    base = os.path.realpath(base)
     path = Path(tempfile.mkdtemp(prefix="server-autoops-", dir=base))
     os.chmod(path, 0o755)  # the unprivileged agent user must reach the token-protected socket
     return path

@@ -26,7 +26,7 @@
 - 智能体容器默认改用 `bridge` 网络（内部版是 `host`）。
 - 新增 policy 校验：校验失败时不启动任何智能体。
 - systemd unit 使用 `KillMode=mixed`，停止服务时不打断 broker 正在执行的 docker 命令。
-- broker 的 Unix socket 放进 /run（或 /tmp）下的一次性目录，不再受运行目录深度影响（socket 路径上限约 107 字节；在 nas 演练中发现）。
+- broker 的 Unix socket 放进 /run（或 /tmp）下的一次性目录，不再受运行目录深度影响（socket 路径上限约 107 字节；在 nas 演练中发现；`/run` 是符号链接时先解析成真实路径）。
 - 安装脚本：没有 tzdata 时自动把示例里的 `Asia/Shanghai` 改成本机固定偏移（在 nas 安装时发现）。
 - 安装脚本：服务文件直接调用安装目录里的程序；OpenWrt 可用 `--wait-path` 开机等待额外的 socket 或数据盘。
 - 启动器以 `python3 -I` 运行并显式指定包路径，当前目录和 `PYTHON*` 环境变量不能注入模块。

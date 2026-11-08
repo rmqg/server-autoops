@@ -49,6 +49,25 @@ class RunnerTest(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             runner.credential(Path(agent["model"]["env_file"]), "AUTOOPS_MODEL_API_KEY")
 
+    def test_bridge_dir_resolves_symlinked_parent(self):
+        real = self.base / "real-run"
+        real.mkdir()
+        link = self.base / "run-link"
+        link.symlink_to(real)
+        bridge = runner._bridge_dir(str(link))
+        try:
+            self.assertEqual(bridge.parent, real.resolve())
+            from server_autoops.broker import serve
+
+            class Echo:
+                def handle(self, request):
+                    return {}
+            server = serve(Echo(), bridge / "broker.sock", "token")
+            server.stop()
+        finally:
+            import shutil
+            shutil.rmtree(bridge, ignore_errors=True)
+
     def test_invalid_agent_configs(self):
         for bad in ({"kind": "shell"}, {"kind": "dsh"}, {"kind": "dsh", "image": "x", "user": "0:0", "model": {}}):
             with self.assertRaises(ValueError):
