@@ -1,0 +1,15 @@
+[Unit]
+Description=mem-guard: observe-only memory pressure logger (never stops anything)
+After=local-fs.target
+
+[Service]
+Type=simple
+EnvironmentFile=-@ETC@/mem-guard.env
+ExecStart=@PREFIX@/contrib/mem-guard/mem-guard.sh
+Restart=always
+RestartSec=10
+OOMScoreAdjust=-900
+Nice=-10
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,9 @@
+#!/bin/sh
+# Launcher. Resolves symlinks so /usr/local/bin/server-autoops -> <prefix>/bin/server-autoops works.
+self=$0
+while [ -L "$self" ]; do
+    target=$(readlink "$self")
+    case "$target" in /*) self=$target ;; *) self=$(dirname "$self")/$target ;; esac
+done
+here=$(cd "$(dirname "$self")" && pwd -P)
+exec "${AUTOOPS_PYTHON:-python3}" -I "$here/server-autoops.py" "$@"

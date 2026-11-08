@@ -1,0 +1,15 @@
+#!/bin/sh /etc/rc.common
+# Observe-only memory logger (procd). Optional: ./install.sh --with-mem-guard
+START=98
+STOP=05
+USE_PROCD=1
+
+start_service() {
+    procd_open_instance
+    [ -r @ETC@/mem-guard.env ] && . @ETC@/mem-guard.env
+    procd_set_param command @PREFIX@/contrib/mem-guard/mem-guard.sh
+    procd_set_param env LOG_DIR="${LOG_DIR:-/var/log/mem-guard}" ALERT_CMD="${ALERT_CMD:-@BIN@ alert}"
+    procd_set_param nice -10
+    procd_set_param respawn 3600 10 0
+    procd_close_instance
+}

@@ -1,0 +1,21 @@
+[Unit]
+Description=server-autoops: alert listener and policy-bounded repair worker
+Documentation=https://github.com/rmqg/server-autoops
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+Environment=AUTOOPS_CONFIG=@ETC@/config.json
+ExecStart=@BIN@ run --config @ETC@/config.json
+Restart=always
+RestartSec=10
+# Only the scheduler receives SIGTERM; it lets an in-flight broker transaction finish or roll back
+# (agent_grace_seconds, default 240 s) before the rest of the cgroup is killed.
+KillMode=mixed
+TimeoutStopSec=270
+NoNewPrivileges=yes
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

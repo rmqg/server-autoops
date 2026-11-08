@@ -1,0 +1,15 @@
+{
+  "$schema": "../schema/policy.schema.json",
+  "version": 1,
+  "description": "最小可用：一个容器、一个故障码、只允许启动/重启",
+  "services": {
+    "web": {
+      "container": "web",
+      "mutable": true,
+      "probe": {"kind": "http", "url": "http://127.0.0.1:8080/healthz"}
+    }
+  },
+  "faults": {
+    "web:UNHEALTHY": {"targets": ["web"]}
+  }
+}

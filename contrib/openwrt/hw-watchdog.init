@@ -1,0 +1,21 @@
+#!/bin/sh /etc/rc.common
+# Optional, OpenWrt only. Some x86 watchdog drivers (e.g. iTCO_wdt) load after procd has
+# already tried /dev/watchdog, so procd's watchdog stays "offline". This asks procd to
+# reopen it at boot; if the system then hangs longer than the watchdog timeout, the
+# hardware reboots it. Check first: ls /dev/watchdog; ubus call system watchdog
+START=97
+
+start() {
+	[ -c /dev/watchdog ] || return 0
+	i=0
+	while [ $i -lt 10 ]; do
+		ubus call system watchdog '{"stop": false}' >/dev/null 2>&1
+		ubus call system watchdog 2>/dev/null | grep -q '"running"' && {
+			logger -t hw-watchdog "hardware watchdog running"
+			return 0
+		}
+		i=$((i + 1))
+		sleep 3
+	done
+	logger -t hw-watchdog "failed to start hardware watchdog"
+}

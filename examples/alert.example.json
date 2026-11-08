@@ -1,0 +1,1 @@
+{"service": "app", "fault_code": "WEB_DOWN", "level": "failure", "title": "web 健康检查失败", "summary": "HTTP 503", "details": "连续 2 次失败"}

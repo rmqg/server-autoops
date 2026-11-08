@@ -1,0 +1,64 @@
+{
+  "$schema": "../schema/policy.schema.json",
+  "version": 1,
+  "description": "示例：名单里的才自动处理，名单外的一律只记录、先问人",
+  "docker": {
+    "bin": "/usr/bin/docker",
+    "daemons": {
+      "main": "unix:///var/run/docker.sock"
+    }
+  },
+  "protected_name_patterns": ["autoops", "broker", "listener", "vm", "network"],
+  "code_aliases": {
+    "app:ALL_DOWN": ["WEB_DOWN", "WORKER_DOWN"]
+  },
+  "services": {
+    "web": {
+      "description": "网站前端，HTTP 健康接口返回 {\"ok\": true}",
+      "container": "app-web",
+      "mutable": true,
+      "probe": {"kind": "http", "url": "http://127.0.0.1:8080/healthz", "json_key": "ok", "expected": true},
+      "probe_timeout_seconds": 45,
+      "log_files": ["/srv/app/logs/web.log"]
+    },
+    "worker": {
+      "description": "后台任务，用自带的检查命令做业务探针；配置只开放三个数值",
+      "container": "app-worker",
+      "mutable": true,
+      "probe": {"kind": "exec", "argv": ["/usr/local/bin/worker", "status", "--check"]},
+      "configs": {
+        "main": {
+          "path": "/srv/app/worker/config.json",
+          "format": "json",
+          "editable_keys": ["interval", "batch_size", "features.retry"],
+          "bounds": {"interval": [1, 300], "batch_size": [1, 64]}
+        }
+      },
+      "compose": {
+        "file": "/srv/app/compose.yaml",
+        "service": "worker",
+        "project_dir": "/srv/app"
+      }
+    },
+    "db": {
+      "description": "数据库：只诊断，绝不自动重启",
+      "container": "app-db",
+      "mutable": false,
+      "probe": {"kind": "health"}
+    },
+    "chat-bot": {
+      "description": "需要扫码登录的机器人：掉登录只能人来扫",
+      "container": "chat-bot",
+      "mutable": true,
+      "login_sensitive": true,
+      "probe": {"kind": "running"}
+    }
+  },
+  "faults": {
+    "app:WEB_DOWN": {"targets": ["web"], "description": "前端健康接口失败"},
+    "app:WORKER_DOWN": {"targets": ["worker"]},
+    "app:WORKER_CONFIG": {"targets": ["worker"], "description": "worker 配置异常，可改白名单里的数值"},
+    "app:DB_DOWN": {"targets": ["db"], "diagnose_only": true},
+    "chat-bot:LOGIN_LOST": {"targets": ["chat-bot"], "needs_scan": true}
+  }
+}

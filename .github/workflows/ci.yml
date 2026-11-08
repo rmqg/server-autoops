@@ -1,0 +1,27 @@
+name: ci
+on:
+  push:
+    branches: [main]
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.10", "3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: unit tests
+        run: python -m unittest discover -s tests -t . -v
+      - name: policy examples
+        run: python -I bin/server-autoops.py policy check examples/policy.example.json
+      - name: offline demo
+        run: python -I bin/server-autoops.py demo
+      - name: shell syntax
+        run: for f in install.sh uninstall.sh scripts/build-release.sh contrib/mem-guard/mem-guard.sh examples/checks/*.sh; do sh -n "$f"; done

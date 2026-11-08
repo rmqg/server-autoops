@@ -1,0 +1,296 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/rmqg/server-autoops/schema/policy.schema.json",
+  "title": "server-autoops policy (version 1)",
+  "description": "白名单：只有这里写明的服务、探针、可改配置键和故障码映射才会被执行。程序内的校验（server-autoops policy check）比本 schema 更严格，以程序为准。",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "services",
+    "faults"
+  ],
+  "properties": {
+    "$schema": {
+      "type": "string"
+    },
+    "version": {
+      "const": 1
+    },
+    "description": {
+      "type": "string"
+    },
+    "docker": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "bin": {
+          "type": "string",
+          "pattern": "^/",
+          "not": {
+            "pattern": "(^|/)\\.\\.(/|$)"
+          }
+        },
+        "daemons": {
+          "type": "object",
+          "minProperties": 1,
+          "propertyNames": {
+            "pattern": "^[A-Za-z0-9_.-]{1,128}$"
+          },
+          "additionalProperties": {
+            "type": "string",
+            "pattern": "^unix:///"
+          }
+        }
+      }
+    },
+    "protected_name_patterns": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^[^A-Z]+$",
+        "minLength": 1
+      }
+    },
+    "allow_simulated": {
+      "type": "boolean"
+    },
+    "code_aliases": {
+      "type": "object",
+      "propertyNames": {
+        "pattern": "^[^\\s:]{1,160}:[^\\s]{1,240}$"
+      },
+      "additionalProperties": {
+        "type": "array",
+        "minItems": 1,
+        "maxItems": 16,
+        "items": {
+          "type": "string",
+          "pattern": "^\\S+$"
+        }
+      }
+    },
+    "services": {
+      "type": "object",
+      "propertyNames": {
+        "pattern": "^[A-Za-z0-9_.-]{1,128}$"
+      },
+      "additionalProperties": {
+        "$ref": "#/$defs/service"
+      }
+    },
+    "faults": {
+      "type": "object",
+      "propertyNames": {
+        "pattern": "^[^\\s:]{1,160}:[^\\s]{1,240}$"
+      },
+      "additionalProperties": {
+        "$ref": "#/$defs/fault"
+      }
+    }
+  },
+  "$defs": {
+    "service": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "description": {
+          "type": "string"
+        },
+        "driver": {
+          "enum": [
+            "docker",
+            "simulated"
+          ],
+          "default": "docker"
+        },
+        "daemon": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_.-]{1,128}$",
+          "default": "main"
+        },
+        "container": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_.-]{1,128}$"
+        },
+        "mutable": {
+          "type": "boolean",
+          "default": false
+        },
+        "login_sensitive": {
+          "type": "boolean",
+          "default": false
+        },
+        "probe": {
+          "$ref": "#/$defs/probe"
+        },
+        "probe_timeout_seconds": {
+          "type": "number",
+          "minimum": 1,
+          "maximum": 600,
+          "default": 45
+        },
+        "log_files": {
+          "type": "array",
+          "maxItems": 32,
+          "items": {
+            "type": "string",
+            "pattern": "^/",
+            "not": {
+              "pattern": "(^|/)\\.\\.(/|$)"
+            }
+          }
+        },
+        "configs": {
+          "type": "object",
+          "propertyNames": {
+            "pattern": "^[A-Za-z0-9_.-]{1,128}$"
+          },
+          "additionalProperties": {
+            "$ref": "#/$defs/config"
+          }
+        },
+        "compose": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "file",
+            "service",
+            "project_dir"
+          ],
+          "properties": {
+            "file": {
+              "type": "string",
+              "pattern": "^/",
+              "not": {
+                "pattern": "(^|/)\\.\\.(/|$)"
+              }
+            },
+            "project_dir": {
+              "type": "string",
+              "pattern": "^/",
+              "not": {
+                "pattern": "(^|/)\\.\\.(/|$)"
+              }
+            },
+            "service": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_.-]{1,128}$"
+            }
+          }
+        },
+        "state_file": {
+          "type": "string",
+          "pattern": "^/",
+          "not": {
+            "pattern": "(^|/)\\.\\.(/|$)"
+          }
+        }
+      }
+    },
+    "probe": {
+      "type": "object",
+      "required": [
+        "kind"
+      ],
+      "properties": {
+        "kind": {
+          "enum": [
+            "running",
+            "health",
+            "http",
+            "exec"
+          ]
+        },
+        "url": {
+          "type": "string",
+          "pattern": "^https?://"
+        },
+        "json_key": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]+(\\.[A-Za-z0-9_-]+)*$"
+        },
+        "expected": {},
+        "argv": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "config": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "format"
+      ],
+      "properties": {
+        "description": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string",
+          "pattern": "^/",
+          "not": {
+            "pattern": "(^|/)\\.\\.(/|$)"
+          }
+        },
+        "format": {
+          "enum": [
+            "json",
+            "toml"
+          ]
+        },
+        "editable_keys": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_-]+(\\.[A-Za-z0-9_-]+)*$"
+          }
+        },
+        "bounds": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "array",
+            "minItems": 2,
+            "maxItems": 2,
+            "items": {
+              "type": "number"
+            }
+          }
+        }
+      }
+    },
+    "fault": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "targets"
+      ],
+      "properties": {
+        "description": {
+          "type": "string"
+        },
+        "targets": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_.-]{1,128}$"
+          }
+        },
+        "needs_scan": {
+          "type": "boolean",
+          "default": false
+        },
+        "diagnose_only": {
+          "type": "boolean",
+          "default": false
+        }
+      }
+    }
+  }
+}

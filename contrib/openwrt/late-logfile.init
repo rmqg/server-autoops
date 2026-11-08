@@ -1,0 +1,33 @@
+#!/bin/sh /etc/rc.common
+# Optional, OpenWrt only. When the persistent log directory lives on a disk that is mounted
+# late (USB, loop device), logd's "log to file" instance never starts. This waits for the
+# mount, saves the boot ring buffer, then starts the file instance once (logd is not restarted).
+# Set DATA_MOUNT and LOG_DIR below, and point system.@system[0].log_file into LOG_DIR.
+START=96
+
+DATA_MOUNT=/mnt/data
+LOG_DIR=/mnt/data/system-logs
+KEEP=10
+
+start() {
+	(
+		i=0
+		while [ $i -lt 120 ]; do
+			grep -q " $DATA_MOUNT " /proc/mounts && break
+			sleep 1
+			i=$((i + 1))
+		done
+		if ! grep -q " $DATA_MOUNT " /proc/mounts; then
+			logger -t late-logfile "$DATA_MOUNT not mounted after 120 s; logs stay in RAM"
+			exit 0
+		fi
+		if ubus call service list '{"name":"log"}' 2>/dev/null | grep -q '"logfile"'; then
+			exit 0
+		fi
+		mkdir -p "$LOG_DIR"
+		logread > "$LOG_DIR/boot-$(date +%Y%m%dT%H%M%S)-ringbuffer.log" 2>/dev/null
+		/etc/init.d/log start
+		logger -t late-logfile "started logread file instance"
+		ls -1t "$LOG_DIR"/boot-*-ringbuffer.log 2>/dev/null | tail -n +$((KEEP + 1)) | xargs -r rm -f
+	) &
+}

@@ -1,0 +1,49 @@
+{
+  "root": "/var/lib/server-autoops",
+  "stream": "/var/lib/server-autoops/alert-stream.jsonl",
+  "state_db": "/var/lib/server-autoops/state/queue.sqlite3",
+  "runs_dir": "/var/lib/server-autoops/runs",
+  "policy": "/etc/server-autoops/policy.json",
+  "timezone": "Asia/Shanghai",
+  "cooldown_seconds": 300,
+  "service_hourly_limit": 3,
+  "daily_limit": 20,
+  "agent_timeout": 600,
+  "agent_grace_seconds": 240,
+  "breaker_failures": 3,
+  "breaker_base_seconds": 3600,
+  "breaker_max_seconds": 86400,
+  "min_available_mb": 1024,
+  "poll_seconds": 0.5,
+  "daily_hour": 8,
+  "retention_days": 90,
+  "notify": {
+    "kind": "bark",
+    "url_file": "/etc/server-autoops/bark.url",
+    "group": "server-autoops",
+    "default_level": "passive"
+  },
+  "agent": {
+    "kind": "dsh",
+    "image": "local/server-autoops-agent:0.1.0",
+    "docker_bin": "/usr/bin/docker",
+    "docker_host": "unix:///var/run/docker.sock",
+    "network": "bridge",
+    "memory": "512m",
+    "cpus": 0.75,
+    "pids_limit": 96,
+    "tmpfs_mb": 96,
+    "user": "1000:1000",
+    "model": {
+      "provider_id": "autoops-model",
+      "display_name": "AutoOps model",
+      "api": "openai-completions",
+      "base_url": "https://api.example.com/v1",
+      "model": "your-model-id",
+      "context_window": 131072,
+      "max_tokens": 8192,
+      "api_key_env": "AUTOOPS_MODEL_API_KEY",
+      "env_file": "/etc/server-autoops/model.env"
+    }
+  }
+}

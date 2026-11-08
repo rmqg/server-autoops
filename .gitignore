@@ -1,0 +1,16 @@
+__pycache__/
+*.pyc
+dist/
+.trial/
+.venv/
+# never commit real configuration, secrets or run state
+config.json
+policy.json
+model.env
+bark.url
+*.sqlite3*
+runs/
+state/
+alert-stream.jsonl*
+notifications.jsonl
+.DS_Store
