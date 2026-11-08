@@ -8,7 +8,7 @@ CONFIG=@ETC@/config.json
 start_service() {
     procd_open_instance
     # Wait for the data disk, Docker and the config before starting (boot order on routers varies).
-    procd_set_param command /bin/sh -c "while [ ! -S /var/run/docker.sock ] || [ ! -r $CONFIG ]; do sleep 2; done; exec @BIN@ run --config $CONFIG"
+    procd_set_param command /bin/sh -c "while [ ! -S /var/run/docker.sock ] || [ ! -r $CONFIG ]@WAIT@; do sleep 2; done; exec @BIN@ run --config $CONFIG"
     procd_set_param env AUTOOPS_CONFIG="$CONFIG"
     procd_set_param respawn 3600 10 0
     procd_set_param stdout 1

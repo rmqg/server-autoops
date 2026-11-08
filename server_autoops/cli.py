@@ -5,7 +5,7 @@ import sys
 
 from . import __version__
 
-SCHEDULER_COMMANDS = {"run", "status", "enqueue", "daily", "drain", "replay"}
+SCHEDULER_COMMANDS = {"run", "status", "enqueue", "daily", "drain", "replay", "maintenance"}
 HELP = f"""server-autoops {__version__}
 
 用法: server-autoops <命令> [选项]      （每个命令都支持 -h）
@@ -17,6 +17,7 @@ HELP = f"""server-autoops {__version__}
   drain        调试：处理当前所有可处理的告警后退出（需先停常驻服务）
   daily        生成并发送某一天的日报
   replay       调试：从头重放当前告警流（生产不要用）
+  maintenance on|off|status   维护模式：照常记录告警，但暂停自动修复（默认 6 小时后自动结束）
 告警与通知:
   alert        给 watchdog 用：往告警流写一条告警，并按配置推送
   notify-test  发一条测试通知，检查 Bark/命令通知是否配好

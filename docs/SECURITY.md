@@ -85,6 +85,7 @@ server-autoops 自己从不「先做了再说」：
 | 熔断通知 | 每个服务每天最多一条 | — |
 | 可用内存低于多少不启动智能体（只延后，不丢告警） | 1024 MiB | `min_available_mb` |
 | 同一时间运行的智能体 | 1 个（文件锁） | — |
+| 维护模式 | 关 | `server-autoops maintenance on/off`：开着时只记录告警，不启动智能体 |
 | 单次运行总时限 / 其中留给 broker 收尾的时间 | 600 秒 / 240 秒 | `agent_timeout`、`agent_grace_seconds` |
 
 超时或服务停止时，runner 先删除智能体容器、等 broker 正在进行的配置事务完成或回滚（最多 `agent_grace_seconds`），再结束进程组。systemd unit 用 `KillMode=mixed` 让 SIGTERM 只发给 scheduler，避免同时打断 broker 正在执行的 `docker compose`。

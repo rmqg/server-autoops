@@ -27,6 +27,8 @@ sudo server-autoops status
 
 ### 一直 pending，不启动智能体
 
+先看是不是维护模式没关：`server-autoops maintenance status`（`status` 输出里的 `maintenance` 不是 null）。关掉：`server-autoops maintenance off`。
+
 ```sh
 sqlite3 /var/lib/server-autoops/state/queue.sqlite3 "select id,service,fault_code,datetime(due_at,'unixepoch'),last_error from queue where status='pending'"
 sqlite3 /var/lib/server-autoops/state/queue.sqlite3 "select service,failures,datetime(open_until,'unixepoch') from breakers"

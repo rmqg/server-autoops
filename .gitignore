@@ -14,3 +14,5 @@ state/
 alert-stream.jsonl*
 notifications.jsonl
 .DS_Store
+# SMB delete-pending placeholders (network mounts)
+.smbdelete*

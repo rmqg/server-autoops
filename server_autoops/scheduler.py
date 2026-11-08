@@ -54,6 +54,7 @@ OUTCOME_LABELS = {
     "failed": "失败", "needs_scan": "需人工", "blocked": "受阻", "interrupted": "中断", "running": "运行中",
 }
 NOTIFICATION_LEASE_SECONDS = 120
+MAINTENANCE_DROPPED = "received during maintenance; dropped by operator"
 NOTIFICATION_RETRY_MAX_SECONDS = 6 * 3600
 
 
@@ -247,6 +248,22 @@ def available_memory_mb() -> int:
         pass
     return 0
 
+
+
+def parse_duration(text: str) -> float:
+    """'90s', '30m', '6h', '2d' or plain seconds; '0' means no expiry."""
+    text = str(text).strip().lower()
+    units = {"s": 1, "m": 60, "h": 3600, "d": 86400}
+    try:
+        if text and text[-1] in units:
+            value = float(text[:-1]) * units[text[-1]]
+        else:
+            value = float(text)
+    except ValueError as exc:
+        raise SchedulerError(f"invalid duration {text!r}; use e.g. 30m, 6h, 2d or 0") from exc
+    if not math.isfinite(value) or value < 0 or value > 366 * 86400:
+        raise SchedulerError("duration must be between 0 and 366 days")
+    return value
 
 
 class FileLock:
@@ -1012,6 +1029,72 @@ class Scheduler:
                              (now, UNMAPPED_REASON, queue_id))
         return len(unmapped)
 
+    # ---- maintenance mode -------------------------------------------------------------
+    # While on, alerts and recoveries are still read, merged and recorded, but no agent is
+    # started and no budget is used. It ends at `until` (if set) or with maintenance_off().
+
+    def maintenance(self, conn: sqlite3.Connection | None = None) -> dict[str, Any] | None:
+        """Current maintenance window, or None. An expired window is ended (with a notice)."""
+        if conn is None:
+            with self._transaction() as tx:
+                return self.maintenance(tx)
+        row = conn.execute("SELECT value FROM metadata WHERE key='maintenance'").fetchone()
+        if row is None:
+            return None
+        try:
+            info = json.loads(row["value"])
+        except (TypeError, ValueError):
+            info = None
+        if not isinstance(info, dict):
+            conn.execute("DELETE FROM metadata WHERE key='maintenance'")
+            return None
+        until = info.get("until")
+        if isinstance(until, (int, float)) and self.clock() >= until:
+            conn.execute("DELETE FROM metadata WHERE key='maintenance'")
+            self._enqueue_notification(conn, f"maintenance-expired:{info.get('since')}", "maintenance",
+                "AutoOps 维护模式已到期结束", f"维护模式（原因：{_safe_text(info.get('reason', ''), 200)}）已于 "
+                f"{_local_clock(float(until))} 自动结束，恢复自动修复。")
+            return None
+        return info
+
+    def maintenance_on(self, *, duration: float = 6 * 3600, reason: str = "") -> dict[str, Any]:
+        now = self.clock()
+        info = {"since": now, "until": now + duration if duration > 0 else None,
+                "reason": _safe_text(reason or "manual", 200), "since_iso": _utc_iso(now),
+                "until_iso": _utc_iso(now + duration) if duration > 0 else None}
+        with self._transaction() as conn:
+            current = self.maintenance(conn)
+            if current is not None:
+                info["since"], info["since_iso"] = current.get("since", now), current.get("since_iso", _utc_iso(now))
+            conn.execute("INSERT INTO metadata(key,value) VALUES('maintenance',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                         (json.dumps(info, ensure_ascii=False),))
+            running = conn.execute("SELECT COUNT(*) FROM queue WHERE status='running'").fetchone()[0]
+        return {**info, "running_now": int(running)}
+
+    def maintenance_off(self, *, drop_pending: bool = False) -> dict[str, Any]:
+        now = self.clock()
+        with self._transaction() as conn:
+            info = self.maintenance(conn)
+            conn.execute("DELETE FROM metadata WHERE key='maintenance'")
+            dropped = 0
+            if drop_pending and info is not None:
+                dropped = conn.execute("UPDATE queue SET status='blocked',updated_at=?,last_error=? WHERE status='pending' AND created_at>=?",
+                                       (now, MAINTENANCE_DROPPED, float(info.get("since", now)))).rowcount
+            pending = conn.execute("SELECT COUNT(*) FROM queue WHERE status='pending'").fetchone()[0]
+        return {"was_on": info is not None, "dropped": int(dropped), "pending_now": int(pending)}
+
+    def wait_idle(self, timeout: float = 600.0) -> bool:
+        """Wait until no agent run is in flight (for `maintenance on --wait`)."""
+        deadline = time.monotonic() + timeout
+        while True:
+            with contextlib.closing(self._connect()) as conn:
+                running = conn.execute("SELECT COUNT(*) FROM queue WHERE status='running'").fetchone()[0]
+            if not running:
+                return True
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(1.0)
+
     def _claim_next(self) -> dict[str, Any] | None:
         now = self.clock()
         policy = self._load_policy()
@@ -1022,6 +1105,8 @@ class Scheduler:
                     "AutoOps 授权策略无法读取", "policy.json 无法读取或未通过校验（运行 server-autoops policy check 查看原因）；告警全部保留在队列，暂不启动 Agent。")
             return None
         self._block_unmapped(policy, now)
+        if self.maintenance() is not None:
+            return None  # maintenance: alerts stay recorded and pending, no agent starts
         # Memory is a hard admission gate, not a reason to drop a durable alert.
         try:
             free_mb = int(self.memory_probe())
@@ -1387,6 +1472,9 @@ class Scheduler:
                      f"隔离错误日志行：{int(q_errors)}"]
             if total == 0 and pending == 0 and needs_scan == 0 and blocked == 0 and q_errors == 0:
                 lines.append("当日无运维变更；这是每日健康心跳。")
+            maint = conn.execute("SELECT value FROM metadata WHERE key='maintenance'").fetchone()
+            if maint is not None:
+                lines.append("注意：维护模式仍然开启，自动修复暂停中（server-autoops maintenance off 关闭）。")
             run_rows = conn.execute("SELECT run_id,service,fault_code,started_at,outcome,summary FROM runs "
                                     "WHERE started_at>=? AND started_at<? ORDER BY started_at,run_id LIMIT 20", (start, end_ts)).fetchall()
             if run_rows:
@@ -1549,7 +1637,15 @@ class Scheduler:
             outbox = {row["state"]: row["n"] for row in conn.execute("SELECT state,COUNT(*) n FROM notifications GROUP BY state")}
             cursor_count = conn.execute("SELECT COUNT(*) FROM cursors").fetchone()[0]
             quarantine_count = conn.execute("SELECT COUNT(*) FROM quarantines").fetchone()[0]
-            return {"queue": {key: int(counts.get(key, 0)) for key in ("pending", "running", "resolved", "needs_scan", "blocked", "recovered")}, 
+            maint = conn.execute("SELECT value FROM metadata WHERE key='maintenance'").fetchone()
+            try:
+                maintenance = json.loads(maint["value"]) if maint else None
+            except (TypeError, ValueError):
+                maintenance = None
+            if isinstance(maintenance, dict) and isinstance(maintenance.get("until"), (int, float)) and self.clock() >= maintenance["until"]:
+                maintenance = None  # expired; the worker ends it on its next pass
+            return {"maintenance": ({k: maintenance.get(k) for k in ("since_iso", "until_iso", "reason")} if maintenance else None),
+                    "queue": {key: int(counts.get(key, 0)) for key in ("pending", "running", "resolved", "needs_scan", "blocked", "recovered")}, 
                     "notifications": {key: int(outbox.get(key, 0)) for key in ("pending", "sending", "sent", "suppressed")},
                     "breakers": breakers, "tracked_stream_sources": int(cursor_count),
                     "quarantined_lines": int(quarantine_count), "available_memory_mb": int(self.memory_probe())}
@@ -1634,6 +1730,12 @@ def _parser() -> argparse.ArgumentParser:
     replay.add_argument("--max-runs", type=int, default=None)
     drain = sub.add_parser("drain", help="read the stream and process currently eligible events")
     drain.add_argument("--max-runs", type=int, default=None)
+    maint = sub.add_parser("maintenance", help="pause automatic repair while still recording alerts")
+    maint.add_argument("action", choices=["on", "off", "status"])
+    maint.add_argument("--for", dest="duration", default="6h", help="on: auto-end after this long (30m, 6h, 2d; 0 = never). Default 6h")
+    maint.add_argument("--reason", default="", help="on: free text shown in status and notices")
+    maint.add_argument("--wait", action="store_true", help="on: also wait (max 10 min) until a running agent has finished")
+    maint.add_argument("--drop-pending", action="store_true", help="off: close alerts that arrived during maintenance instead of repairing them")
     return parser
 
 
@@ -1662,6 +1764,17 @@ def main(argv: list[str] | None = None) -> int:
             results = scheduler.run_drain(max_runs=args.max_runs)
             print(json.dumps({"runs": results, "status": scheduler.status()}, ensure_ascii=False, sort_keys=True))
             return 0
+        if args.command == "maintenance":
+            if args.action == "on":
+                result = scheduler.maintenance_on(duration=parse_duration(args.duration), reason=args.reason)
+                if args.wait and result["running_now"]:
+                    result["idle"] = scheduler.wait_idle()
+            elif args.action == "off":
+                result = scheduler.maintenance_off(drop_pending=args.drop_pending)
+            else:
+                result = {"maintenance": scheduler.status()["maintenance"]}
+            print(json.dumps(result, ensure_ascii=False, sort_keys=True))
+            return 0 if result.get("idle", True) else 1
         if args.command == "replay":
             results = scheduler.run_drain(replay=True, max_runs=args.max_runs) if args.drain else scheduler.run_loop(once=True, replay=True)
             print(json.dumps({"runs": results if isinstance(results, list) else [], "status": scheduler.status()}, ensure_ascii=False, sort_keys=True))

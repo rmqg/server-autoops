@@ -225,7 +225,13 @@ def check(config_path: str) -> Report:
                 counts = dict(conn.execute("SELECT status,COUNT(*) FROM queue GROUP BY status").fetchall())
                 breakers = conn.execute("SELECT COUNT(*) FROM breakers WHERE open_until>strftime('%s','now')").fetchone()[0]
                 outbox = dict(conn.execute("SELECT state,COUNT(*) FROM notifications GROUP BY state").fetchall())
+                maint = conn.execute("SELECT value FROM metadata WHERE key='maintenance'").fetchone()
             rep.add(OK, "state", f"队列 {counts or '空'}；熔断中服务 {breakers}；通知 {outbox or '空'}")
+            if maint is not None:
+                info = json.loads(maint[0])
+                until = info.get("until_iso") or "不会自动结束"
+                rep.add(WARN, "maintenance", f"维护模式开启中（{info.get('reason', '')}；到期 {until}）：告警照常记录，但不会自动修复",
+                        "维护结束后运行 server-autoops maintenance off")
             if counts.get("needs_scan"):
                 rep.add(WARN, "state", f"有 {counts['needs_scan']} 条告警等人工检查", "server-autoops status；看 runs/<run_id>/result.json")
             if outbox.get("pending", 0) > 5:

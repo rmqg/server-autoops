@@ -20,7 +20,7 @@ from typing import Any, Callable
 BARK_LEVELS = ("passive", "active", "timeSensitive")
 NOTICE_KINDS = (
     "daily", "needs_scan", "breaker", "rate_limit", "policy", "stream_loss",
-    "alert_failure", "alert_recovery", "alert_warning", "memory", "test",
+    "alert_failure", "alert_recovery", "alert_warning", "memory", "maintenance", "test",
 )
 DEFAULT_LEVEL = "passive"
 

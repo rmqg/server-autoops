@@ -12,6 +12,7 @@ BIN_DIR=/usr/local/bin
 SERVICE=auto
 START=1
 MEM_GUARD=0
+WAIT=""
 
 usage() {
 	cat <<USAGE
@@ -23,6 +24,7 @@ usage() {
   --service KIND      auto | systemd | procd | none（默认 auto 自动识别）
   --no-start          只安装，不启用、不启动服务
   --with-mem-guard    同时安装可选的内存观察 mem-guard 服务
+  --wait-path PATH    procd：开机时等这个路径出现再启动（可多次，例如第二套 dockerd 的 socket、数据盘上的配置）
 已有的 config.json、policy.json 不会被覆盖；升级时重新运行即可。
 USAGE
 }
@@ -36,6 +38,7 @@ while [ $# -gt 0 ]; do
 		--service) SERVICE=$2; shift 2 ;;
 		--no-start) START=0; shift ;;
 		--with-mem-guard) MEM_GUARD=1; shift ;;
+		--wait-path) WAIT="$WAIT || [ ! -e $2 ]"; shift 2 ;;
 		-h|--help) usage; exit 0 ;;
 		*) echo "未知选项: $1" >&2; usage >&2; exit 2 ;;
 	esac
@@ -74,7 +77,8 @@ chmod -R go-w "$PREFIX"
 say "命令链接 $BIN_DIR/server-autoops"
 mkdir -p "$BIN_DIR"
 ln -sf "$PREFIX/bin/server-autoops" "$BIN_DIR/server-autoops"
-BIN="$BIN_DIR/server-autoops"
+# Services call the program by its install path, so a lost /usr/bin link (e.g. after a firmware upgrade) cannot break them.
+BIN="$PREFIX/bin/server-autoops"
 
 say "配置目录 $ETC，数据目录 $STATE"
 mkdir -p "$ETC" "$STATE/state" "$STATE/runs"
@@ -108,7 +112,7 @@ else
 fi
 [ -e "$ETC/model.env" ] || { cp "$PREFIX/examples/model.env.example" "$ETC/model.env"; chmod 600 "$ETC/model.env"; }
 
-render() { sed -e "s#@ETC@#$ETC#g" -e "s#@BIN@#$BIN#g" -e "s#@PREFIX@#$PREFIX#g" "$1" > "$2"; }
+render() { sed -e "s#@ETC@#$ETC#g" -e "s#@BIN@#$BIN#g" -e "s#@PREFIX@#$PREFIX#g" -e "s#@WAIT@#$WAIT#g" "$1" > "$2"; }
 case "$SERVICE" in
 	systemd)
 		render "$PREFIX/contrib/systemd/server-autoops.service" /etc/systemd/system/server-autoops.service

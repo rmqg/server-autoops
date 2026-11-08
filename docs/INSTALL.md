@@ -49,7 +49,7 @@ macOS 上没有 `sha256sum` 时用 `shasum -a 256 -c SHA256SUMS`。
 
 空白白名单下服务是安全的：所有告警都只会记为受阻。
 
-常用选项：`--no-start`、`--service systemd|procd|none`、`--with-mem-guard`（同时装内存观察）、`--prefix`、`--etc`、`--state`、`--bin-dir`。
+常用选项：`--wait-path PATH`（OpenWrt：开机时多等一个路径，比如第二套 dockerd 的 socket；可以写多次）、`--no-start`、`--service systemd|procd|none`、`--with-mem-guard`（同时装内存观察）、`--prefix`、`--etc`、`--state`、`--bin-dir`。
 
 ## 4. 构建智能体镜像（用 dsh 时）
 
@@ -108,6 +108,24 @@ server-autoops alert --service app --fault-code WEB_DOWN_RECOVERED --level recov
 sudo server-autoops doctor
 sudo server-autoops status
 ```
+
+## 维护模式：动服务之前先暂停自动修复
+
+升级、迁移、手动停启被 policy 管着的服务之前，先打开维护模式，否则看门狗报的故障会让智能体把你正在停的服务「修」回去：
+
+```sh
+server-autoops maintenance on --for 2h --reason "升级 app" --wait   # --wait：如果有智能体正在跑，等它结束（最多 10 分钟）
+server-autoops maintenance status
+# ……做你的维护……
+server-autoops maintenance off                 # 维护期间积压的告警会接着处理
+server-autoops maintenance off --drop-pending  # 或者：维护期间的告警都是预期内的，直接关掉不修
+```
+
+- 维护期间告警照常读取、合并、记录；恢复事件照常取消排队中的告警。
+- 不启动智能体、不占用每小时/每天的额度、不计熔断。
+- `--for` 默认 6 小时，到期自动结束并发一条通知；`--for 0` 表示不自动结束（doctor 会一直提醒）。
+- 状态存在状态库里，服务重启后仍然有效；日报里也会提示维护模式还开着。
+- 正在进行的那一次运行不会被打断；用 `--wait` 等它结束。
 
 ## 可选组件
 

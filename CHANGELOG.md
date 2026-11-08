@@ -14,6 +14,7 @@
 - 智能体后端：`dsh`（受限容器，唯一工具 `ops`）、`mock`（脚本，演示/CI/上线前演练）、`disabled`（只探针）。
 - 预算与熔断：冷却、每服务每小时、全局每天上限；连续失败熔断后指数退避（默认 1h→24h，永不放弃，成功清零）；熔断通知每服务每天一条；低内存只延后。
 - 通知：Bark（地址只从 600 文件或环境变量读，默认全部 `passive`）、命令、文件；持久出站箱和退避重试；每日日报心跳。
+- 维护模式 `server-autoops maintenance on|off|status`：照常记录告警，但暂停自动修复；可到期自动结束、`--wait` 等在跑的运行结束、`off --drop-pending` 丢弃维护期间的告警。
 - `server-autoops alert`（看门狗用）、`doctor`（自检）、`demo`（离线端到端演示，21 项检查）、`notify-test`。
 - 安装脚本（systemd / OpenWrt procd / 无服务管理器）、卸载脚本。
 - 可选组件：observe-only 内存观察 mem-guard、OpenWrt 硬件看门狗与延迟日志补救、小内存 zram sysctl 建议；通用容器 + HTTP 看门狗示例、OneBot 在线和出口地区的示例检查。
@@ -25,5 +26,6 @@
 - 智能体容器默认改用 `bridge` 网络（内部版是 `host`）。
 - 新增 policy 校验：校验失败时不启动任何智能体。
 - systemd unit 使用 `KillMode=mixed`，停止服务时不打断 broker 正在执行的 docker 命令。
+- 安装脚本：服务文件直接调用安装目录里的程序；OpenWrt 可用 `--wait-path` 开机等待额外的 socket 或数据盘。
 - 启动器以 `python3 -I` 运行并显式指定包路径，当前目录和 `PYTHON*` 环境变量不能注入模块。
 - 新增模拟驱动（`driver: simulated`，需显式开启）和模拟智能体，用于不依赖 Docker 和模型的演示和测试。
