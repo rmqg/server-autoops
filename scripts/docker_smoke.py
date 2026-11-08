@@ -66,6 +66,8 @@ def main() -> int:
     ap.add_argument("--network", help="join this docker network and probe the canary by name")
     ap.add_argument("--docker-bin", default=shutil.which("docker") or "/usr/bin/docker")
     ap.add_argument("--docker-host", default="unix:///var/run/docker.sock")
+    ap.add_argument("--agent-json", help="file with an `agent` config object (e.g. a real dsh agent) instead of the scripted mock")
+    ap.add_argument("--maintenance-drill", action="store_true", help="also check that maintenance mode records but does not repair")
     args = ap.parse_args()
     docker = [args.docker_bin, "-H", args.docker_host]
     base = Path(args.workdir).resolve()
@@ -117,7 +119,8 @@ def main() -> int:
             "root": str(base), "stream": str(base / "alerts.jsonl"), "policy": str(base / "policy.json"),
             "timezone": "UTC+08:00", "cooldown_seconds": 0, "min_available_mb": 0, "agent_timeout": 120,
             "agent_grace_seconds": 60, "notify": {"kind": "file", "path": str(base / "notify.jsonl")},
-            "agent": {"kind": "mock", "plans": plans}}, indent=2))
+            "agent": json.loads(Path(args.agent_json).read_text()) if args.agent_json else {"kind": "mock", "plans": plans}},
+            indent=2))
         config = load_config(base / "config.json")
         sched = Scheduler(config)
         sched.scan_stream()
@@ -135,6 +138,24 @@ def main() -> int:
         check("docker logs 里的密钥已脱敏", "hunter2" not in log and "[REDACTED]" in log)
         check("配置文件属主权限保持 0640", (cfg.stat().st_mode & 0o777) == 0o640)
 
+        if args.maintenance_drill:
+            cfg.write_text('{"enabled": false, "api_key": "hunter2"}\n')
+            sh(*docker, "restart", "-t", "2", NAME)
+            time.sleep(2)
+            sched.maintenance_on(duration=600, reason="smoke")
+            dispatch(config, "smoke", "CONFIG_DISABLED", "failure", "t", "s", push=False)
+            sched.scan_stream()
+            ran = sched.drain()
+            check("维护模式：告警被记录、没有启动智能体、服务保持原样", not ran and http(url) == 503
+                  and sched.status()["queue"]["pending"] == 1)
+            off = sched.maintenance_off(drop_pending=True)
+            check("关闭维护模式并丢弃维护期间的告警", off["dropped"] == 1 and not sched.drain())
+            cfg.write_text('{"enabled": true, "api_key": "hunter2"}\n')
+            sh(*docker, "restart", "-t", "2", NAME)
+            for _ in range(40):
+                if http(url) == 200:
+                    break
+                time.sleep(0.5)
         sh(*docker, "stop", "-t", "2", NAME)
         dispatch(config, "smoke", "PROCESS_DOWN", "failure", "t", "s", push=False)
         sched.scan_stream()
