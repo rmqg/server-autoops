@@ -24,10 +24,10 @@ done; done
 
 | 镜像 | 架构 | Python / SQLite | 校验和 | demo | 安装 | doctor | policy check | 单元测试 | 卸载 |
 |---|---|---|---|---|---|---|---|---|---|
-| debian:12（Debian GNU/Linux 12 bookworm） | arm64 | 3.11.2 / 3.40.1 | OK | 21/21，14.0 s | 成功（`--service` 自动识别为 none） | 4 错误 4 提醒（预期，见下） | 通过 | 57 项 OK | 干净 |
-| debian:12 | amd64（仿真） | 3.11.2 / 3.40.1 | OK | 21/21，18.5 s | 成功 | 同上 | 通过 | 57 项 OK | 干净 |
-| ubuntu:24.04（Ubuntu 24.04.4 LTS） | arm64 | 3.12.3 / 3.45.1 | OK | 21/21，14.9 s | 成功 | 同上 | 通过 | 57 项 OK | 干净 |
-| ubuntu:24.04 | amd64（仿真） | 3.12.3 / 3.45.1 | OK | 21/21，18.4 s | 成功 | 同上 | 通过 | 57 项 OK | 干净 |
+| debian:12（Debian GNU/Linux 12 bookworm） | arm64 | 3.11.2 / 3.40.1 | OK | 21/21，14.0 s | 成功（`--service` 自动识别为 none） | 4 错误 4 提醒（预期，见下） | 通过 | 64 项 OK | 干净 |
+| debian:12 | amd64（仿真） | 3.11.2 / 3.40.1 | OK | 21/21，18.5 s | 成功 | 同上 | 通过 | 64 项 OK | 干净 |
+| ubuntu:24.04（Ubuntu 24.04.4 LTS） | arm64 | 3.12.3 / 3.45.1 | OK | 21/21，14.9 s | 成功 | 同上 | 通过 | 64 项 OK | 干净 |
+| ubuntu:24.04 | amd64（仿真） | 3.12.3 / 3.45.1 | OK | 21/21，18.4 s | 成功 | 同上 | 通过 | 64 项 OK | 干净 |
 
 doctor 在刚安装、还没配置时报的 4 个错误，和文档说的一致：容器里没有 docker 程序、智能体镜像不存在、`model.env` 还是占位符、`agent.model` 还是示例地址。4 个提醒：policy 没有故障码映射、没有配通知、没有 systemd/procd、状态库还没创建。
 
@@ -35,8 +35,8 @@ doctor 在刚安装、还没配置时报的 4 个错误，和文档说的一致�
 
 | 环境 | 内容 | 结果 |
 |---|---|---|
-| Ubuntu 22.04.5 主机，Python 3.10.12（没有 tomllib） | 单元测试、demo、安装脚本（非 root，`--service none`） | 57 项 OK；21/21 |
-| Alpine（`docker:cli` 镜像），Python 3.14.10 | 单元测试、demo | 57 项 OK；21/21 |
+| Ubuntu 22.04.5 主机，Python 3.10.12（没有 tomllib） | 单元测试、demo、安装脚本（非 root，`--service none`） | 64 项 OK；21/21 |
+| Alpine（`docker:cli` 镜像），Python 3.14.10 | 单元测试、demo | 64 项 OK；21/21 |
 
 ## 3. 真实 Docker 冒烟（broker 操作真容器）
 
@@ -74,7 +74,21 @@ docker image inspect local/server-autoops-agent:0.1.0 --format '{{json .Config.L
 - dsh 退出码 0；最终结论由 broker 探针给出：`healthy`、`verified=true`
 - 运行结束后没有残留的 `server-autoops-agent` 容器
 
-**没有测的**：amd64 的智能体镜像构建；接真实模型的修复运行；systemd 和 OpenWrt procd 下的常驻运行；真实 Bark 推送；`recreate` 和 `exec` 探针在真实 Docker 上的运行（只有单元测试）。见 [COMPATIBILITY.md](COMPATIBILITY.md)。
+## 5. 在真实的 OpenWrt 服务器上替换生产服务
+
+作者自己的 iStoreOS 24.10.8 主机（OpenWrt，内核 6.6.144，x86_64，8 GB 内存，Python 3.11.14，没有 tzdata，Docker 27.3.1，另有第二套 dockerd），用本页的 release 包**替换了原来的内部版本**，并沿用它的 policy（13 个服务、18 个故障码）。全部操作照 [INSTALL.md](INSTALL.md)：`sha256sum -c` → `install.sh --service procd --wait-path <第二套 dockerd 的 socket>`。
+
+| 步骤 | 结果 |
+|---|---|
+| 影子运行：新版开着维护模式、通知关闭，和旧版并行读同一告警流；写入一条无映射的测试告警 | 两边账本完全一致（同一条 blocked，游标都等于告警流大小） |
+| 演练：模拟智能体 + 主 dockerd 上的一次性 64 MiB canary（`docker_smoke.py --maintenance-drill`） | 11/11（含维护模式只记录不修复、关闭时丢弃） |
+| 演练：生产智能体配置（dsh 0.2.1-rc.5 + 真实的 OpenAI 兼容模型，智能体在第二套 dockerd 上）修 canary（`docker_smoke.py --agent-json`） | 9/9：模型自己改配置 503→200，容器停止后 start；工具清单只有 `ops`；结束后无残留容器；可用内存最低约 1600 MiB |
+| 切换：旧服务 stop+disable，旧账本一致快照接为新账本（表结构相同），procd 启动 | 单实例运行；切换后的实时告警被接住；doctor 0 错误 |
+| 生产上的维护模式：on → 写一条只诊断的假告警 → off --drop-pending | 维护期间记录为 pending、0 次运行；关闭后记为 blocked，0 次运行 |
+
+这一轮在真实环境里发现并修好了 4 个问题（已进 CHANGELOG）：broker 的 Unix socket 路径在深目录下超过 108 字节上限；OpenWrt 的 `/run` 是符号链接；安装脚本在没有 tzdata 的系统上写出不可用的 `Asia/Shanghai`；安装脚本把数据盘上的配置目录写进了 `sysupgrade.conf`。
+
+**没有测的**：amd64 的智能体镜像构建（OpenWrt 主机上沿用了已有的同版本 dsh 镜像）；systemd 下的常驻运行；`recreate` 和 `exec` 探针在真实 Docker 上的运行（只有单元测试）；这一轮没有主动推送 Bark（地址文件由 doctor 检查过，第一次真实推送是第二天 08:00 的日报）。见 [COMPATIBILITY.md](COMPATIBILITY.md)。
 
 ## 自己复现
 

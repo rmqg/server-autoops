@@ -21,10 +21,10 @@
 | 项目 | 实测通过 | 未测试 / 不保证 |
 |---|---|---|
 | Python | 3.10.12、3.11.2、3.12.3、3.14.10 | 3.13（仅 CI）；≤3.9 不支持 |
-| 发行版 | Debian 12、Ubuntu 24.04（全新容器，arm64 + amd64） | 其他发行版、OpenWrt/iStoreOS |
-| Docker | 29.4.0 arm64：重启、启动、日志、HTTP 探针、改配置与回滚 | 其他版本；`recreate`、`exec` 探针只有单元测试 |
-| 智能体 | dsh 0.2.1-rc.5 镜像（arm64）+ 本地假模型：只提供 `ops` 工具、插件到 broker、探针定结论 | 真实模型的修复运行；amd64 镜像构建 |
-| 服务管理 | 无服务管理器（`--service none`） | systemd、OpenWrt procd |
+| 发行版 | Debian 12、Ubuntu 24.04（全新容器，arm64 + amd64）；iStoreOS 24.10.8（替换生产服务） | 其他发行版 |
+| Docker | 29.4.0 arm64、27.3.1 amd64：重启、启动、日志、HTTP 探针、改配置与回滚 | 其他版本；`recreate`、`exec` 探针只有单元测试 |
+| 智能体 | dsh 0.2.1-rc.5：本地假模型，以及真实 OpenAI 兼容模型修复 canary | amd64 镜像构建 |
+| 服务管理 | 无服务管理器、OpenWrt procd | systemd |
 
 详细记录见 `docs/VALIDATION.md`、`docs/COMPATIBILITY.md`。
 

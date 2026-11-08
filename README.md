@@ -37,11 +37,11 @@ watchdog ──alert──▶ 告警流(jsonl) ──▶ scheduler(SQLite 队列
 | 项目 | 实测通过 | 未测试 / 不保证 |
 |---|---|---|
 | Python | 3.10.12（Ubuntu 22.04）、3.11.2（Debian 12）、3.12.3（Ubuntu 24.04）、3.14.10（Alpine） | 3.13（只在 CI 矩阵里）；3.9 及以下不支持 |
-| 发行版（照文档安装 + demo + doctor + 卸载） | Debian 12、Ubuntu 24.04 全新容器，arm64 和 amd64 各一遍 | 其他发行版；OpenWrt/iStoreOS（前身在 iStoreOS 24.10.8 上运行，开源版本身未在其上实测） |
-| CPU 架构 | arm64；amd64（在 Apple Silicon 上经 OrbStack 仿真） | 真实 x86_64 硬件、其他架构 |
-| Docker（broker 操作真实容器：重启、启动、日志、HTTP 探针、改配置与回滚） | Docker Engine 29.4.0（arm64），冒烟 9/9 | 其他版本；`recreate` 和 `exec` 探针只有单元测试 |
-| 智能体 dsh | `@deepseek-ai/dsh` 0.2.1-rc.5 镜像构建（arm64），接本地假模型跑通（只提供 `ops` 一个工具、插件到 broker、探针定结论） | 接真实模型的修复运行未在本版本实测 |
-| 服务管理 | `--service none` | systemd unit、OpenWrt procd init（写好了，未在本版本实测） |
+| 发行版（照文档安装 + demo + doctor + 卸载） | Debian 12、Ubuntu 24.04 全新容器，arm64 和 amd64 各一遍；iStoreOS 24.10.8（OpenWrt，x86_64）上替换了生产服务 | 其他发行版 |
+| CPU 架构 | arm64；amd64（OrbStack 仿真 + 真实 x86_64 主机） | 其他架构 |
+| Docker（broker 操作真实容器：重启、启动、日志、HTTP 探针、改配置与回滚） | Docker Engine 29.4.0（arm64）9/9；Docker 27.3.1（amd64）11/11 | 其他版本；`recreate` 和 `exec` 探针只有单元测试 |
+| 智能体 dsh | `@deepseek-ai/dsh` 0.2.1-rc.5 镜像构建（arm64），接本地假模型跑通；接真实 OpenAI 兼容模型在 iStoreOS 上修复 canary 9/9 | 其他模型；bridge 网络下的真实模型运行 |
+| 服务管理 | `--service none`；OpenWrt procd（生产在用） | systemd unit（写好了，未实测） |
 
 详细矩阵和每一项怎么测的见 [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md) 和 [docs/VALIDATION.md](docs/VALIDATION.md)。
 
