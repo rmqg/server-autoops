@@ -137,7 +137,9 @@ case "$SERVICE" in
 			render "$PREFIX/contrib/openwrt/mem-guard.init" /etc/init.d/mem-guard
 			chmod 755 /etc/init.d/mem-guard
 		fi
-		grep -qx "$ETC/" /etc/sysupgrade.conf 2>/dev/null || echo "$ETC/" >> /etc/sysupgrade.conf
+		# Only config under /etc needs keeping across firmware upgrades; never put a data-disk directory
+		# (it holds bark.url) into sysupgrade.conf, which also feeds LuCI's downloadable config backup.
+		case "$ETC" in /etc/*) grep -qx "$ETC/" /etc/sysupgrade.conf 2>/dev/null || echo "$ETC/" >> /etc/sysupgrade.conf ;; esac
 		grep -qx "/etc/init.d/server-autoops" /etc/sysupgrade.conf 2>/dev/null || echo "/etc/init.d/server-autoops" >> /etc/sysupgrade.conf
 		if [ "$START" = 1 ]; then
 			/etc/init.d/server-autoops enable && /etc/init.d/server-autoops start
