@@ -14,6 +14,8 @@ import json
 import os
 import re
 import secrets
+import shutil
+import tempfile
 import shlex
 import signal
 import subprocess
@@ -116,6 +118,8 @@ def validate_agent_config(raw: Any, root: str) -> dict[str, Any]:
             raise ValueError("agent.model.env_file must be absolute")
         if not ENV_NAME_RE.match(model["api_key_env"]):
             raise ValueError("agent.model.api_key_env must be an upper-case variable name")
+        if "bridge_dir" in cfg and (not os.path.isabs(str(cfg["bridge_dir"])) or len(str(cfg["bridge_dir"])) > 60):
+            raise ValueError("agent.bridge_dir must be an absolute path of at most 60 characters")
         if "prompt_file" in cfg and not os.path.isabs(str(cfg["prompt_file"])):
             raise ValueError("agent.prompt_file must be absolute")
     elif kind == "mock":
@@ -167,6 +171,18 @@ def remove_agent_container(agent: dict, expected_run_id: str | None = None) -> N
         return
     subprocess.run(_docker(agent) + ["rm", "-f", AGENT_NAME], stdout=subprocess.DEVNULL,
                    stderr=subprocess.DEVNULL, timeout=20, check=False)
+
+
+def _bridge_dir(parent: str | None = None) -> Path:
+    """Private short directory for the broker socket.
+
+    AF_UNIX paths are limited to ~107 bytes, so the socket cannot live under a deep run
+    directory. It goes to a fresh mkdtemp directory under /run (or /tmp), is bind-mounted
+    read-only into the agent, and is removed when the run ends."""
+    base = parent or ("/run" if os.access("/run", os.W_OK) else None)
+    path = Path(tempfile.mkdtemp(prefix="server-autoops-", dir=base))
+    os.chmod(path, 0o755)  # the unprivileged agent user must reach the token-protected socket
+    return path
 
 
 def _write(path: Path, text: str) -> None:
@@ -265,8 +281,6 @@ def _run(config: dict, event: dict, run_id: str) -> dict:
     agent = config["agent"]
     run_dir = Path(config["runs_dir"]) / run_id
     run_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
-    bridge = run_dir / "bridge"
-    bridge.mkdir(exist_ok=True, mode=0o755)
     policy, _warnings = load_policy(config["policy"])
     broker = Broker(policy, run_dir, event)
     started = time.monotonic()
@@ -275,6 +289,15 @@ def _run(config: dict, event: dict, run_id: str) -> dict:
         output["agent_exit_code"] = None
         output["duration_seconds"] = round(time.monotonic() - started, 2)
         return output
+    bridge = _bridge_dir(agent.get("bridge_dir"))
+    try:
+        return _run_agent(config, agent, broker, run_dir, bridge, event, run_id, started)
+    finally:
+        shutil.rmtree(bridge, ignore_errors=True)
+
+
+def _run_agent(config: dict, agent: dict, broker: Broker, run_dir: Path, bridge: Path, event: dict,
+               run_id: str, started: float) -> dict:
     cmd, env = _agent_command(config, agent, run_dir, bridge, event, run_id)
     token = env.pop("_token")
     server = None

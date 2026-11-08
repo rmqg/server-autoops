@@ -94,6 +94,13 @@ c = json.load(open(src))
 c.update(root=state, stream=f"{state}/alert-stream.jsonl", state_db=f"{state}/state/queue.sqlite3",
          runs_dir=f"{state}/runs", policy=f"{etc}/policy.json")
 c["notify"] = {"kind": "none"}          # turned on after the Bark URL file exists (docs/CONFIGURATION.md)
+try:                                     # minimal systems (OpenWrt) often have no tzdata
+    import zoneinfo; zoneinfo.ZoneInfo(c["timezone"])
+except Exception:
+    import time
+    off = time.strftime("%z")            # e.g. +0800
+    c["timezone"] = f"UTC{off[0]}{off[1:3]}:{off[3:5]}" if len(off) == 5 else "UTC"
+    print(f"==> 本机没有 tzdata，timezone 改用 {c['timezone']}")
 c["agent"]["plugin_dir"] = f"{prefix}/plugin"
 c["agent"]["model"]["env_file"] = f"{etc}/model.env"
 open(dst, "w").write(json.dumps(c, ensure_ascii=False, indent=2) + "\n")

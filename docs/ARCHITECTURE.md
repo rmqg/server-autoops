@@ -57,7 +57,7 @@ stateDiagram-v2
 ## 一次运行里发生什么
 
 1. scheduler 在 `runs/<id>/` 写 `event.json`，以 `python3 -I bin/server-autoops.py runner ...` 启动 runner（新会话、独立进程组）。
-2. runner 拿全局智能体锁，读并校验 policy，创建 broker，在 `runs/<id>/bridge/broker.sock` 上监听，生成一次性 token。
+2. runner 拿全局智能体锁，读并校验 policy，创建 broker，在 `/run/server-autoops-XXXX/broker.sock`（一次性目录）上监听，生成一次性 token。
 3. dsh：新建 `runs/<id>/home/.dsh/`（headless profile、禁用插件列表、模型配置），`docker run` 智能体容器；模拟：启动 mock 智能体子进程；disabled：跳过。
 4. 智能体先 `inventory`，然后 `inspect`/`logs`/`read_config`，必要时 `start`/`restart`/`recreate`/`patch_config`，最后 `finish`。
 5. 智能体退出或超时后，runner 删除容器，**自己再调用一次 `finish`**：broker 对所有授权目标跑探针，结合审计里的改动，写 `result.json`。
@@ -88,5 +88,5 @@ runs/<run_id>/
   backups/          改配置前的原文件（保持属主和权限）
   result.json       broker 的最终结论
   home/             dsh 的一次性 home（kind=dsh）
-  bridge/           broker socket（运行结束即删除）
+（broker 的 Unix socket 放在 /run 或 /tmp 下的一次性目录里：socket 路径有约 107 字节的上限，运行目录可能太深；运行结束即删除。）
 ```

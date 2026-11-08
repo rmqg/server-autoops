@@ -57,7 +57,9 @@ class RunnerTest(unittest.TestCase):
 
 class DemoTest(unittest.TestCase):
     def test_offline_demo_passes_end_to_end(self):
-        with tempfile.TemporaryDirectory() as work:
+        with tempfile.TemporaryDirectory() as tmp:
+            # deep on purpose: AF_UNIX socket paths must not depend on the run directory depth
+            work = str(Path(tmp) / ("deep-" * 12) / "work")
             result = subprocess.run([sys.executable, "-I", str(ROOT / "bin" / "server-autoops.py"), "demo", "--workdir", work],
                                     cwd=str(ROOT), capture_output=True, text=True, timeout=300)
             self.assertEqual(result.returncode, 0, result.stdout[-3000:] + result.stderr[-3000:])

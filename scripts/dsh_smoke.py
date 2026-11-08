@@ -109,6 +109,7 @@ def main() -> int:
         "root": str(base), "policy": str(base / "policy.json"), "timezone": "UTC+08:00",
         "agent_timeout": 300, "agent_grace_seconds": 60,
         "agent": {"kind": "dsh", "image": args.image, "docker_bin": args.docker_bin, "network": args.network,
+                  "bridge_dir": str(base),
                   "model": {"base_url": f"http://{args.host_name}:{args.port}/v1", "model": "fake-model",
                             "env_file": str(env_file)}}}))
     config = load_config(base / "config.json")

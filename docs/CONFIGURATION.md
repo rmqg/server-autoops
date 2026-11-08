@@ -91,6 +91,7 @@ sudo systemctl restart server-autoops && sudo server-autoops notify-test
 | `agent.tmpfs_mb` | 16–4096 | `96` | `/tmp` tmpfs 大小（dsh 需要可写、可执行的 /tmp 加载原生模块） | — |
 | `agent.user` | `uid:gid`，非 0 | `1000:1000` | 容器内用户；运行目录会 chown 给它 | 镜像里的用户不是 1000 时 |
 | `agent.plugin_dir` | 绝对路径 | `<安装目录>/plugin` | `ops` 插件目录，只读挂载进容器 | 一般不改 |
+| `agent.bridge_dir` | 绝对路径（≤60 字符） | `/run`（不可写时 `/tmp`） | 每次运行在这里建一个一次性目录放 broker 的 Unix socket，并挂载进智能体容器 | runner 自己跑在容器里时，改成 Docker 守护进程也能看到的路径 |
 | `agent.prompt_file` | 绝对路径 | 内置中文提示 | 自定义任务提示；告警 JSON 会接在它后面 | 想改语言或补充本机常识 |
 | `agent.model.base_url` | URL，**必填** | — | OpenAI 兼容接口地址，如 `https://api.deepseek.com/v1` | — |
 | `agent.model.model` | 字符串，**必填** | — | 模型 ID | — |
