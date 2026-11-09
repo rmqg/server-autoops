@@ -34,6 +34,8 @@ python3 --version
 
 **应该看到**：最后一行是 `Python 3.10` 或更高的版本号，例如 `Python 3.12.3`。低于 3.10 的系统太旧，换 Debian 12 / Ubuntu 22.04 或更新的系统。
 
+> 报 `Could not get lock /var/lib/dpkg/lock-frontend`（后面写着 `held by process 1234 (apt-get)` 或 `(unattended-upgr)`）：系统正在后台自动更新，全新的服务器刚开机时很常见。**不要删锁文件、不要杀进程**，等几分钟再运行同一条命令。想看它什么时候结束：`ps aux | grep -E "apt|dpkg|unattended" | grep -v grep`，没有输出了就可以。
+
 ## 第 3 步：把 release 包放到服务器上并校验
 
 需要两个文件：`server-autoops-0.1.0.tar.gz` 和 `SHA256SUMS`。

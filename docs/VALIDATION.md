@@ -93,6 +93,14 @@ docker image inspect local/server-autoops-agent:0.1.0 --format '{{json .Config.L
 
 **没有测的**：amd64 的智能体镜像构建（OpenWrt 主机上沿用了已有的同版本 dsh 镜像）；systemd 下的常驻运行；`recreate` 和 `exec` 探针在真实 Docker 上的运行（只有单元测试）；这一轮没有主动推送 Bark（地址文件由 doctor 检查过，第一次真实推送是第二天 08:00 的日报）。见 [COMPATIBILITY.md](COMPATIBILITY.md)。
 
+## 6. 新手照文档验收（2026-11-09）
+
+让一个不看源码、不补文档没写的步骤的弱模型（gpt-6-luna，不思考）扮演新手，只照 README 和 [QUICKSTART.md](QUICKSTART.md) 操作。服务器是 Windows 上的一次性 WSL2 发行版（Ubuntu 24.04.5，x86_64，systemd），没有终端，所以安装走的是答案文件 `--config`。
+
+结果：从校验 release 包一直走到第 8 步，第一次自动修复完成：`status` 里 `resolved: 1`，`result.json` 的 `status` 是 `repaired`，broker 探针 HTTP 200。停在第 9 步「去模型服务商网站拿 API key」（需要真人）。它提的两处问题已经改进文档：nginx 刚启动时第一次 `curl` 可能是 `http 000`，要等几秒；安装结束的提示指向 QUICKSTART 第 7 步。接真实模型（第 9 步）和第 10 步没有经过新手验收。
+
+此前作者也在 OrbStack 的全新 Ubuntu 24.04（arm64）上照同样步骤跑过一遍入门演练：报警后约 5 秒容器被启动，结论 `repaired`。
+
 ## 自己复现
 
 ```sh

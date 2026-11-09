@@ -111,6 +111,9 @@ sqlite3 /var/lib/server-autoops/state/queue.sqlite3 "select kind,state,attempts,
 
 ### 安装向导
 
+- **`apt-get` 报 `Could not get lock /var/lib/dpkg/lock-frontend` / `held by process … (apt-get)` 或 `(unattended-upgr)`**：系统在后台自动更新（全新服务器刚开机时常见），或者上一次 apt 被打断后还在跑。不要删锁、不要杀进程，等它结束（`ps aux | grep -E "apt|dpkg|unattended" | grep -v grep` 没有输出）再运行同一条命令。之后如果提示 `dpkg was interrupted`，运行 `dpkg --configure -a` 再重试。
+
+
 | 现象 | 处理 |
 |---|---|
 | `./install.sh` 没有提问，只打印「没有终端，跳过提问」 | 你是在脚本或自动化工具里运行的。用答案文件：`cp examples/install.env.example install.env && chmod 600 install.env`，改好后 `./install.sh --config install.env` |
