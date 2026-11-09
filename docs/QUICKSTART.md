@@ -146,7 +146,7 @@ docker run -d --name quickstart-web -p 127.0.0.1:18080:80 nginx:alpine
 curl -s -o /dev/null -w "http %{http_code}\n" http://127.0.0.1:18080/
 ```
 
-**应该看到**：`http 200`。（第一次运行会先下载 nginx 镜像，要等几秒到几十秒。）
+**应该看到**：`http 200`。第一次运行会先下载 nginx 镜像，下载完容器还要一两秒才能响应：如果看到的是 `http 000`，等 5 秒再运行一次 `curl` 那一行，直到出现 `http 200` 再往下做。
 
 现在「弄坏」它：把容器停掉，然后像看门狗那样报一条故障：
 

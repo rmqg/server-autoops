@@ -187,7 +187,7 @@ echo
 say "安装完成。下一步做什么（详细的图文步骤见 $PREFIX/docs/QUICKSTART.md）："
 case "$KIND" in
 	mock) cat <<NEXT
-  你选的是「入门演练」。照 docs/QUICKSTART.md 第 6 步做（用 root 运行）：
+  你选的是「入门演练」。接着做 docs/QUICKSTART.md 的第 7 步「第一次自动修复」（用 root 运行）：
   1. 启动演练网站：     docker run -d --name quickstart-web -p 127.0.0.1:18080:80 nginx:alpine
   2. 把它停掉（制造故障）并报警：
                         docker stop quickstart-web
