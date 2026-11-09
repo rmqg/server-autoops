@@ -109,6 +109,22 @@ sudo systemctl restart server-autoops && sudo server-autoops notify-test
 |---|---|---|---|
 | `agent.plans` | 对象 | `{}` | `"<service>:<CODE>": [ops 请求, ...]`。模拟智能体先 `inventory`，再依次发送这些请求，最后 `finish`。没有对应计划时只 `inspect` 每个目标。`{"op":"summary","text":"..."}` 设置诊断摘要；`"$sha256:<服务>/<配置别名>"` 换成最近一次 `read_config` 的哈希 |
 
+## 安装向导的答案文件（install.env）
+
+`./install.sh --config FILE` 和 `server-autoops setup --answers FILE` 读取它，不再提问。每行 `KEY=值`，`#` 开头是注释，值可以加引号；文件只会被读取，不会被执行。里面有密钥时请 `chmod 600`。没写的项保持原样。示例：[examples/install.env.example](../examples/install.env.example)。
+
+| 键 | 取值 | 作用 |
+|---|---|---|
+| `AUTOOPS_AGENT` | `quickstart` / `dsh` / `disabled` / `keep` | `quickstart`：入门演练，`agent.kind=mock`，白名单为空时写入只管 `quickstart-web` 容器的示例白名单（已有白名单不覆盖）；`dsh`：接真实模型；`disabled`：只记录不修；`keep`：不改 |
+| `AUTOOPS_MODEL_BASE_URL` | `https://...` | `dsh` 时的接口地址，默认 `https://api.deepseek.com/v1` |
+| `AUTOOPS_MODEL` | 字符串 | `dsh` 时的模型 ID，默认 `deepseek-chat` |
+| `AUTOOPS_MODEL_API_KEY` | 字符串 | 写进 `agent.model.env_file`（600），不写进 config.json |
+| `AUTOOPS_BARK_URL` | `https://...` | 写进 `bark.url`（600），并把 `notify.kind` 设成 `bark` |
+| `AUTOOPS_TIMEZONE` | IANA 名或 `UTC+08:00` | 写进 `timezone` |
+| `AUTOOPS_QUICKSTART_POLICY` | `yes` / `no` | 选 `quickstart` 时要不要写示例白名单，默认 `yes` |
+
+向导写入前会先校验整份配置，不合法就什么都不改。
+
 ## 示例：最常见的修改
 
 ```jsonc

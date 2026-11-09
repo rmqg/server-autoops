@@ -20,6 +20,16 @@
 - 可选组件：observe-only 内存观察 mem-guard、OpenWrt 硬件看门狗与延迟日志补救、小内存 zram sysctl 建议；通用容器 + HTTP 看门狗示例、OneBot 在线和出口地区的示例检查。
 - 可复现的 release 包、SHA256SUMS、GitHub Actions 构建来源证明。
 
+### 新手可用性（本地 tag 前移，版本号不变）
+
+- `install.sh` 改成向导：先检查发行版、内核、CPU、Python/sqlite3、tzdata、Docker、内存、磁盘、服务管理器、root，缺什么就打印这台机器上的安装命令；再问智能体、Bark 地址、时区，密钥写进 600 文件；最后自检并按选择打印「下一步做什么」。新增 `--config <答案文件>`、`--non-interactive`；没有终端时不提问。
+- 新命令 `server-autoops setup`：同一个向导，装好后可以反复运行；`setup --check-only` 只检查环境。
+- 「入门演练」：不需要模型，写入只管 `quickstart-web` 容器的示例白名单和按脚本行动的模拟智能体，15 分钟内看到第一次真实的自动修复（Ubuntu 24.04 全新机器实测）。
+- 新文档 `docs/QUICKSTART.md`：从全新服务器到第一次自动修复，每一步写明应该看到什么；README 开头标明难度。
+- `doctor` 的每个错误和提醒都带可以直接复制的修复命令；服务刚启动、状态库还在建表时不再误报错误（改成提醒），安装脚本启动服务后等 3 秒再自检。
+- 命令出意外时打印中文说明和下一步，不再只给英文异常栈（`AUTOOPS_DEBUG=1` 看完整信息）。
+- `docs/TROUBLESHOOTING.md` 收录在 iStoreOS 上替换生产时踩过的坑。
+
 ### 相对内部版本的变化
 
 - 所有路径、Docker 守护进程、保护名单、时区、通知、模型都改为配置；不再内置任何业务服务和私人检查项。

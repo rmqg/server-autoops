@@ -109,6 +109,30 @@ sqlite3 /var/lib/server-autoops/state/queue.sqlite3 "select kind,state,attempts,
 | systemd 里 `status=203/EXEC` | `/usr/local/bin/server-autoops` 链接坏了：重新 `./install.sh` |
 | OpenWrt 开机后服务没起来 | init 脚本会等 `/var/run/docker.sock` 和配置文件就绪；`ls /etc/rc.d | grep server-autoops` 确认已 enable；固件升级后确认 `/etc/sysupgrade.conf` 里有它 |
 
+### 安装向导
+
+| 现象 | 处理 |
+|---|---|
+| `./install.sh` 没有提问，只打印「没有终端，跳过提问」 | 你是在脚本或自动化工具里运行的。用答案文件：`cp examples/install.env.example install.env && chmod 600 install.env`，改好后 `./install.sh --config install.env` |
+| 向导报「这些设置组合起来不合法」 | 什么都没改。按提示改答案或 `config.json`，再 `sudo server-autoops setup` |
+| 选了入门演练，但提示「已经有白名单，入门演练不会覆盖它」 | 故意的：不会覆盖你已有的 policy。确实要演练就先备份再清空：`cp /etc/server-autoops/policy.json /root/policy.bak && printf '{"version": 1, "services": {}, "faults": {}}\n' > /etc/server-autoops/policy.json`，再 `sudo server-autoops setup` |
+| 刚装完 doctor 说「状态库正在初始化」 | 服务刚启动，几秒后再 `sudo server-autoops doctor` |
+| 入门演练报警后容器没被启动 | `server-autoops status` 看 `blocked`：告警的 `--service quickstart-web --fault-code WEB_DOWN` 要一字不差；看 `pending`：可能在冷却，同一个故障 5 分钟内只修一次（`cooldown_seconds`），等一会儿或换个容器演练 |
+
+### 在真实服务器上替换旧版时踩过的坑（iStoreOS / OpenWrt 上实测）
+
+这些在 0.1.0 里都已经修好或者有了应对办法，列在这里方便你认出同样的症状。
+
+| 现象 | 原因 | 处理 |
+|---|---|---|
+| 智能体一启动就失败，日志里有 `AF_UNIX path too long` 或 socket 连不上 | Unix socket 的路径最多约 107 字节，运行目录放得很深时超长 | 0.1.0 已经把 socket 放进 `/run`（或 `/tmp`）下的一次性短目录；自己设了 `agent.bridge_dir` 的，保持在 60 个字符以内 |
+| OpenWrt 上智能体连不上 broker | OpenWrt 的 `/run` 是符号链接，按链接路径建 socket 目录再交给 Docker 挂载会对不上 | 0.1.0 先解析成真实路径；自己设 `bridge_dir` 时写真实路径（`readlink -f /run`） |
+| 日报时间差 8 小时；或报 `timezone ... not available` | 精简系统（OpenWrt）的 Python 没有 tzdata，`Asia/Shanghai` 用不了 | 安装脚本检测到没有 tzdata 时自动写成固定偏移（如 `UTC+08:00`）；也可以 `sudo server-autoops setup` 在时区那一步输入 `UTC+08:00` |
+| LuCI「下载配置备份」里出现了 Bark 地址 | OpenWrt 的 `/etc/sysupgrade.conf` 里列的目录会被打进配置备份 | 0.1.0 只在配置目录位于 `/etc` 下时才写进 sysupgrade.conf。配置放在 `/etc` 下时 `bark.url` 也会进备份：备份文件不要外传；或安装时用 `--etc` 把配置放到数据盘（固件升级后要自己重装服务） |
+| 智能体容器起不来，`docker run` 报网络相关的错误（找不到 bridge 网络一类） | 跑智能体的 dockerd（比如为隔离单独起的第二套 dockerd）配置了 `"bridge": "none"` 或 `"iptables": false`，没有 bridge 网络 | 给那个 dockerd 打开默认 bridge；或者在 `config.json` 里把 `agent.network` 改成 `host`（智能体能访问本机所有回环端口，doctor 会一直提醒，了解风险后再用）。`agent.docker_host` 写那个 dockerd 的 socket |
+| 开机后服务没起来，第二套 dockerd 或数据盘还没就绪 | procd 启动得比它们早 | 安装时加 `--wait-path <socket 或数据盘上的配置路径>`（可以写多次） |
+| 固件升级后 `server-autoops` 命令没了 | 升级只保留 sysupgrade.conf 里列的文件，`/usr/local/bin` 的链接丢了 | 服务直接调用安装目录里的程序，不受影响；命令用 `/opt/server-autoops/bin/server-autoops`，或重新 `./install.sh` |
+
 ### 智能体会不会把我的网页版/别的 Compose 项目弄重启？
 
 不会碰名单外的容器。但如果你用 Compose **构建**了智能体镜像，镜像会带 `com.docker.compose.project` 标签，某些守护 Compose 项目的工具会把智能体容器当成项目成员。用普通 `docker build` 构建；runner 每次 `docker run` 也会把这三个标签清空。检查：

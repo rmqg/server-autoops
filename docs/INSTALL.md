@@ -39,17 +39,29 @@ macOS 上没有 `sha256sum` 时用 `shasum -a 256 -c SHA256SUMS`。
 ./install.sh
 ```
 
+第一次接触的话，建议改看 [QUICKSTART.md](QUICKSTART.md)，那里每一步都写了应该看到什么。
+
 它做的事：
 
-1. 检查 Python 版本和 sqlite3 模块；
+1. 检查环境：发行版、内核、CPU、Python 和 sqlite3、tzdata、Docker、可用内存、磁盘、服务管理器、是不是 root。缺必需的东西就停下，并打印这台机器上该用的安装命令；
 2. 把程序复制到 `/opt/server-autoops`，命令链接到 `/usr/local/bin/server-autoops`；
 3. 建 `/etc/server-autoops`（755）和 `/var/lib/server-autoops`（700），生成 `config.json`（通知关闭、模型地址是占位符）、空白 `policy.json`（没有任何授权）、`model.env`（600，占位密钥）；**已有的不会覆盖**；
 4. 识别服务管理器：systemd 装 `/etc/systemd/system/server-autoops.service`，OpenWrt 装 `/etc/init.d/server-autoops` 并加入 `/etc/sysupgrade.conf`；然后启用并启动（`--no-start` 跳过）；
-5. 运行一次 `server-autoops doctor`。这时报「镜像不存在、模型地址是示例」是正常的。
+5. 在终端里运行时，启动服务之前先进**配置向导**（`server-autoops setup`）问三个问题：智能体用「入门演练」（不需要模型）、「接真实模型」（地址、模型 ID、API key）还是「暂时不修」；Bark 通知地址（可跳过）；时区。密钥和 Bark 地址写进 600 权限的文件，不会显示出来。向导可以随时用 `sudo server-autoops setup` 重新运行；
+6. 运行一次 `server-autoops doctor`，最后打印「下一步做什么」。没配模型时报「镜像不存在、模型地址是示例」是正常的。
+
+没有终端时（脚本、CI、自动化工具）不提问，只打印一行提示。要自动回答，用答案文件：
+
+```sh
+cp examples/install.env.example install.env && chmod 600 install.env    # 按里面的注释改
+./install.sh --config install.env
+```
+
+`--non-interactive` 强制不提问（已有配置不变；新装时模型是占位符、通知关闭）。
 
 空白白名单下服务是安全的：所有告警都只会记为受阻。
 
-常用选项：`--wait-path PATH`（OpenWrt：开机时多等一个路径，比如第二套 dockerd 的 socket；可以写多次）、`--no-start`、`--service systemd|procd|none`、`--with-mem-guard`（同时装内存观察）、`--prefix`、`--etc`、`--state`、`--bin-dir`。
+常用选项：`--config FILE`（答案文件）、`--non-interactive`、`--wait-path PATH`（OpenWrt：开机时多等一个路径，比如第二套 dockerd 的 socket；可以写多次）、`--no-start`、`--service systemd|procd|none`、`--with-mem-guard`（同时装内存观察）、`--prefix`、`--etc`、`--state`、`--bin-dir`。
 
 ## 4. 构建智能体镜像（用 dsh 时）
 

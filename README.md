@@ -1,5 +1,10 @@
 # server-autoops
 
+> **难度和用时**
+> - **离线演示**：约 5 分钟，不要账号、不要 root、不要 Docker、不联网（下面「快速开始」第 1 步）。
+> - **第一次自动修复（入门演练）**：约 15 分钟，需要会用 SSH 登录服务器、复制粘贴命令；不需要模型账号。跟着 [docs/QUICKSTART.md](docs/QUICKSTART.md) 一步一步做。
+> - **真实部署**：需要会用 Linux 命令行和 Docker，并且有一个 OpenAI 兼容的模型 API key；白名单要你自己按 [docs/POLICY.md](docs/POLICY.md) 写。
+
 **Linux 服务器的「有白名单的」自动运维。** 看门狗发现故障后写一条告警；server-autoops 把它放进持久队列，按 `policy.json` 白名单查出这个故障允许碰哪些服务，然后启动一个**被关在受限容器里的 LLM 智能体**排查和修复。智能体手里只有一个结构化工具 `ops`，它的每个请求都由宿主上的 root broker 按白名单逐条核对后才执行；修没修好由 broker 自己的探针判断，不听模型的口头汇报。
 
 ```
@@ -59,11 +64,15 @@ tar xzf server-autoops-0.1.0.tar.gz && cd server-autoops-0.1.0
 ### 2. 安装（root）
 
 ```sh
-sudo ./install.sh            # 装到 /opt/server-autoops，配置在 /etc/server-autoops，数据在 /var/lib/server-autoops
+sudo ./install.sh            # 先检查环境，再安装，然后问你三个问题（智能体、Bark 通知、时区）
 sudo server-autoops doctor   # 自检，每个问题都给修复命令
 ```
 
-安装后白名单是空的，什么都不会被自动处理。按 [docs/INSTALL.md](docs/INSTALL.md) 继续：写 policy、构建智能体镜像、填模型密钥、配通知、接看门狗。
+- 向导第 1 个问题选「入门演练」，不需要模型就能看到第一次自动修复，完整步骤见 [docs/QUICKSTART.md](docs/QUICKSTART.md)。
+- 没有终端（脚本、自动化工具）时不提问，用答案文件：`sudo ./install.sh --config install.env`，格式见 [examples/install.env.example](examples/install.env.example)。
+- 以后想换模型、改 Bark 地址：`sudo server-autoops setup`，可以反复运行。
+
+装到 `/opt/server-autoops`，配置在 `/etc/server-autoops`，数据在 `/var/lib/server-autoops`。没选入门演练时白名单是空的，什么都不会被自动处理。按 [docs/INSTALL.md](docs/INSTALL.md) 继续：写 policy、构建智能体镜像、填模型密钥、配通知、接看门狗。
 
 ### 3. 接一个看门狗
 
@@ -84,6 +93,7 @@ server-autoops alert --service app --fault-code WEB_DOWN --level failure --title
 
 | 文档 | 内容 |
 |---|---|
+| [docs/QUICKSTART.md](docs/QUICKSTART.md) | 新手从零开始：全新服务器 → 第一次自动修复，每一步写了应该看到什么 |
 | [docs/INSTALL.md](docs/INSTALL.md) | 一步一步安装、升级、卸载 |
 | [docs/CONFIGURATION.md](docs/CONFIGURATION.md) | `config.json` 每个参数：含义、类型、默认值、示例、什么时候改 |
 | [docs/POLICY.md](docs/POLICY.md) | 怎么写白名单、每个字段、常见写法、校验 |

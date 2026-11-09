@@ -21,7 +21,8 @@ HELP = f"""server-autoops {__version__}
 告警与通知:
   alert        给 watchdog 用：往告警流写一条告警，并按配置推送
   notify-test  发一条测试通知，检查 Bark/命令通知是否配好
-检查与演示:
+安装与检查:
+  setup        安装向导：选智能体、填模型密钥和 Bark 地址（sudo server-autoops setup，可以反复运行）
   doctor       自检：依赖、权限、配置、policy、Docker、镜像、模型密钥、通知、服务状态
   policy check <policy.json>   校验 policy 白名单
   demo         离线演示：合成环境里模拟告警，用模拟智能体走完整个流程（不需要 Docker 和模型）
@@ -53,6 +54,24 @@ def _hoist_config(argv: list[str]) -> list[str]:
 
 
 def main(argv: list[str] | None = None) -> int:
+    try:
+        return _main(argv)
+    except KeyboardInterrupt:
+        print("\n已中断。", file=sys.stderr)
+        return 130
+    except PermissionError as exc:
+        print(f"错误：没有权限（{exc.filename or exc}）。大多数命令要用 root：在前面加 sudo 再试。", file=sys.stderr)
+        return 1
+    except Exception as exc:  # last resort: never leave a beginner with only an English traceback
+        if __import__("os").environ.get("AUTOOPS_DEBUG"):
+            raise
+        print(f"错误：{type(exc).__name__}: {exc}\n"
+              "  先运行 sudo server-autoops doctor，它会列出每个问题和修复命令；\n"
+              "  还解决不了，加环境变量 AUTOOPS_DEBUG=1 重跑这条命令看完整信息，再按 docs/TROUBLESHOOTING.md 排查。", file=sys.stderr)
+        return 1
+
+
+def _main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     if not argv or argv[0] in ("-h", "--help", "help"):
         print(HELP)
@@ -70,6 +89,9 @@ def main(argv: list[str] | None = None) -> int:
     if command == "policy":
         from .policy import main as policy_main
         return policy_main(rest)
+    if command == "setup":
+        from .setup import main as setup_main
+        return setup_main(_hoist_config(rest))
     if command == "doctor":
         from .doctor import main as doctor_main
         return doctor_main(rest)
