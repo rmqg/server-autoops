@@ -27,7 +27,7 @@ DRIVERS = ("docker", "simulated")
 TOP_KEYS = {"$schema", "version", "description", "docker", "protected_name_patterns",
             "allow_simulated", "code_aliases", "services", "faults"}
 SERVICE_KEYS = {"description", "driver", "daemon", "container", "mutable", "login_sensitive",
-                "probe", "probe_timeout_seconds", "log_files", "configs", "compose", "state_file"}
+                "probe", "probe_timeout_seconds", "log_files", "configs", "actions", "compose", "state_file"}
 FAULT_KEYS = {"description", "targets", "needs_scan", "diagnose_only"}
 
 
@@ -188,6 +188,30 @@ def validate_policy(raw: Any) -> tuple[dict[str, Any], list[str], list[str]]:
                     errors.append(f"{cw}.bounds.{key} is not in editable_keys")
                 if not (isinstance(limits, list) and len(limits) == 2 and all(_number(x) for x in limits) and limits[0] <= limits[1]):
                     errors.append(f"{cw}.bounds.{key} must be [min, max] numbers with min <= max")
+        actions = svc.setdefault("actions", {})
+        if not isinstance(actions, dict):
+            errors.append(f"{where}.actions must be an object")
+            actions = {}
+        for act_name, act_spec in actions.items():
+            aw = f"{where}.actions.{act_name}"
+            if not NAME_RE.match(act_name):
+                errors.append(f"{aw}: action name must match [A-Za-z0-9_.-]")
+            if not isinstance(act_spec, dict):
+                errors.append(f"{aw} must be an object")
+                continue
+            for k in sorted(set(act_spec) - {"argv", "scope", "timeout_seconds", "description"}):
+                errors.append(f"{aw}: unknown key {k!r}")
+            scope = act_spec.setdefault("scope", "container")
+            if scope not in ("container", "host"):
+                errors.append(f"{aw}.scope must be 'container' or 'host'")
+            argv = act_spec.get("argv")
+            if not isinstance(argv, list) or not argv or not all(isinstance(a, str) and a and "\x00" not in a for a in argv):
+                errors.append(f"{aw}.argv must be a non-empty list of strings")
+            elif scope == "host" and not _abs_clean(argv[0]):
+                errors.append(f"{aw}.argv[0] must be a clean absolute path when scope is 'host'")
+            act_timeout = act_spec.setdefault("timeout_seconds", 60)
+            if not _number(act_timeout) or not 1 <= act_timeout <= 600:
+                errors.append(f"{aw}.timeout_seconds must be between 1 and 600")
         compose = svc.get("compose")
         if compose is not None:
             if driver != "docker":

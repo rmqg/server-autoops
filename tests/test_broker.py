@@ -214,6 +214,24 @@ class BrokerTest(unittest.TestCase):
         self.assertFalse(socket_path.exists())
 
 
+    def test_run_action_executes_whitelisted_action_and_audits_repaired(self):
+        self.policy["services"]["api"]["actions"] = {
+            "wake": {"argv": ["/bin/echo", "woke"], "scope": "container", "description": "唤醒窗口"},
+            "sync": {"argv": ["/bin/echo", "synced"], "scope": "host", "description": "同步导出"},
+        }
+        self.rebuild()
+        inv = self.broker.handle({"op": "inventory"})
+        self.assertIn("wake", inv["targets"][0]["actions"])
+        with patch.object(self.broker, "_probe", return_value={"ok": True, "kind": "http", "running": True, "http_status": 200}), patch(
+            "server_autoops.broker.subprocess.run", return_value=subprocess.CompletedProcess([], 0, "woke\n", "")
+        ):
+            act_res = self.broker.handle({"op": "run_action", "target": "api", "action": "wake"})
+            fin_res = self.broker.handle({"op": "finish", "summary": "通过 wake 动作恢复正常"})
+        self.assertTrue(act_res["ok"])
+        self.assertEqual(fin_res["status"], "repaired")
+        with self.assertRaises(BrokerError):
+            self.broker.handle({"op": "run_action", "target": "api", "action": "unlisted"})
+
 
 
 if __name__ == "__main__":

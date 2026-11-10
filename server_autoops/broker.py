@@ -64,7 +64,7 @@ class Broker:
         if not isinstance(request, dict):
             raise BrokerError("request must be an object")
         op = request.get("op")
-        if op not in {"inventory", "inspect", "logs", "read_config", "patch_config", "start", "restart", "recreate", "verify", "finish"}:
+        if op not in {"inventory", "inspect", "logs", "read_config", "patch_config", "start", "restart", "recreate", "run_action", "verify", "finish"}:
             raise BrokerError("unsupported operation")
         with self._lock:
             if op == "inventory":
@@ -87,6 +87,8 @@ class Broker:
                 return self._restart(service)
             if op == "recreate":
                 return self._recreate(service)
+            if op == "run_action":
+                return self._run_action(service, request.get("action"))
             if op == "verify":
                 return self._verify(service)
         raise BrokerError("operation failed")
@@ -135,7 +137,10 @@ class Broker:
             service = self.policy.get("services", {}).get(name, {})
             configs = service.get("configs", {})
             config_info = {alias: {"editable_keys": spec.get("editable_keys", []), "bounds": spec.get("bounds", {})} for alias, spec in configs.items() if isinstance(spec, dict)}
-            entries.append({"target": name, "daemon": service.get("daemon"), "probe": service.get("probe", {}).get("kind"), "configs": config_info})
+            actions = service.get("actions", {})
+            action_info = {act: {"description": spec.get("description", ""), "scope": spec.get("scope", "container")} for act, spec in actions.items() if isinstance(spec, dict)}
+            mutable = bool(service.get("mutable") and not service.get("login_sensitive") and not self._is_protected_target(name, service))
+            entries.append({"target": name, "daemon": service.get("daemon"), "mutable": mutable, "probe": service.get("probe", {}).get("kind"), "configs": config_info, "actions": action_info})
         return {"targets": entries, "fault": {"needs_scan": bool(self._event_fault.get("needs_scan")), "diagnose_only": bool(self._event_fault.get("diagnose_only"))}}
 
     def _docker_prefix(self, service: dict) -> list[str]:
@@ -419,6 +424,35 @@ class Broker:
         self._audit({"op": "recreate", "service": service["compose"].get("service"), "before": before, "result": outcome["ok"], "rolled_back": False})
         return outcome
 
+    def _run_action(self, service: dict, action_name: Any) -> dict:
+        self._mutable_service_for_service(service, "run_action")
+        actions = service.get("actions", {})
+        spec = actions.get(action_name) if isinstance(action_name, str) else None
+        if not isinstance(spec, dict):
+            raise BrokerError("unknown or unauthorized action")
+        argv = spec.get("argv")
+        if not isinstance(argv, list) or not argv:
+            raise BrokerError("invalid action argv")
+        scope = spec.get("scope", "container")
+        timeout = int(spec.get("timeout_seconds", 60))
+        before = self._probe(service)
+        try:
+            if scope == "host":
+                res = subprocess.run(argv, capture_output=True, text=True, timeout=timeout, check=False, shell=False, env=self._docker_env())
+            else:
+                container = service.get("container")
+                if not isinstance(container, str) or not re.fullmatch(r"[A-Za-z0-9_.-]{1,128}", container):
+                    raise BrokerError("invalid fixed service mapping")
+                res = subprocess.run([*self._docker_prefix(service), "exec", container, *argv], capture_output=True, text=True, timeout=timeout, check=False, shell=False, env=self._docker_env())
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise BrokerError(f"action execution failed: {type(exc).__name__}") from exc
+        after = self._wait_for_probe(service) if res.returncode == 0 else self._probe(service)
+        stdout_tail = self._redact((res.stdout or "")[-2048:])
+        stderr_tail = self._redact((res.stderr or "")[-2048:])
+        outcome = {"ok": res.returncode == 0 and after["ok"], "action": action_name, "exit_code": res.returncode, "stdout": stdout_tail, "stderr": stderr_tail, "before": before, "after": after}
+        self._audit({"op": "run_action", "container": service.get("container"), "action": action_name, "exit_code": res.returncode, "result": outcome["ok"]})
+        return outcome
+
     def _recreate_command(self, service: dict) -> subprocess.CompletedProcess:
         mapping = service.get("compose")
         if not isinstance(mapping, dict):
@@ -440,7 +474,7 @@ class Broker:
         if target is None:
             raise BrokerError("unmapped target")
         self._mutable_service(target, service)
-        if operation in {"start", "restart", "recreate"} and (self._event_fault.get("needs_scan") is True or self._event_fault.get("diagnose_only") is True):
+        if operation in {"start", "restart", "recreate", "run_action"} and (self._event_fault.get("needs_scan") is True or self._event_fault.get("diagnose_only") is True):
             raise BrokerError("event does not authorize service mutation")
     def _verify(self, service: dict) -> dict:
         probe = self._probe(service)
@@ -465,14 +499,18 @@ class Broker:
         probe_conclusion = "授权目标探针全部通过" if not failed and results else ("探针未通过目标：" + ", ".join(failed) if failed else "没有可验证的授权目标")
         if verified and container_only:
             probe_conclusion += "（" + ", ".join(container_only) + " 只有容器运行探针：容器在跑、业务未验证）"
-        if self._event_fault.get("needs_scan") is True:
-            status, verified, conclusion = "needs_scan", False, "需要扫描"
+        agent_needs_scan = request.get("needs_scan") is True or (
+            not business_verified
+            and any(kw in diagnosis for kw in ("请扫描", "二维码", "重新登录", "登录已失效", "登录凭证已失效", "KickedOffLine", "需要人工扫码", "需要人工登录", "无法自动", "需人工介入", "需要人工介入"))
+        )
+        if self._event_fault.get("needs_scan") is True or agent_needs_scan:
+            status, verified, conclusion = "needs_scan", False, "需要扫码或人工登录"
         elif not self._allowed:
             status, verified, conclusion = "blocked", False, "无获准目标，运维受阻"
         elif self._event_fault.get("diagnose_only") is True:
             status, verified, conclusion = "blocked", False, "该故障仅允许诊断"
         elif verified:
-            changed = any(action.get("op") in {"start", "restart", "recreate", "patch_config_success"} and action.get("result", action.get("verified", False)) is True for action in actions)
+            changed = any(action.get("op") in {"start", "restart", "recreate", "run_action", "patch_config_success"} and action.get("result", action.get("verified", False)) is True for action in actions)
             if business_verified:
                 status, conclusion = ("repaired", "授权目标修复后均健康") if changed else ("healthy", "授权目标均健康")
             else:

@@ -863,9 +863,9 @@ class Scheduler:
         now = self.clock()
         if recovery:
             if service_level:
-                cur = conn.execute("UPDATE queue SET status='recovered',updated_at=?,last_error=NULL WHERE service=? AND status='pending'", (now, service))
+                cur = conn.execute("UPDATE queue SET status='recovered',updated_at=?,last_error=NULL WHERE service=? AND status IN ('pending','needs_scan')", (now, service))
             else:
-                cur = conn.execute("UPDATE queue SET status='recovered',updated_at=?,last_error=NULL WHERE service=? AND fault_code=? AND status='pending'", (now, service, fault_code))
+                cur = conn.execute("UPDATE queue SET status='recovered',updated_at=?,last_error=NULL WHERE service=? AND fault_code=? AND status IN ('pending','needs_scan')", (now, service, fault_code))
             return {"action": "recovered", "cancelled": cur.rowcount, "service": service, "fault_code": fault_code}
         row = conn.execute("SELECT id,status,event_json,merged_count FROM queue WHERE service=? AND fault_code=? AND status IN ('pending','running') ORDER BY id LIMIT 1",
                            (service, fault_code)).fetchone()
@@ -1330,6 +1330,7 @@ class Scheduler:
                 outcome += "_unverified"
             conn.execute("UPDATE runs SET finished_at=?,outcome=?,verified=?,exit_code=?,summary=? WHERE run_id=?",
                          (now, outcome, int(success), exit_code, summary, claim["run_id"]))
+            diagnosis_text = _safe_text(result.get("diagnosis") or summary, 600)
             if interrupted:
                 conn.execute("UPDATE queue SET status='pending',updated_at=?,due_at=?,run_id=NULL,last_error=? WHERE id=?",
                              (now, now, summary, claim["queue_id"]))
@@ -1342,7 +1343,8 @@ class Scheduler:
                 conn.execute("UPDATE queue SET status='needs_scan',updated_at=?,last_error=? WHERE id=?",
                              (now, summary, claim["queue_id"]))
                 self._enqueue_notification(conn, f"needs-scan:{claim['queue_id']}", "needs_scan",
-                    "AutoOps 需要人工检查", f"service={_safe_text(claim['service'])}; fault={_safe_text(claim['fault_code'])}; run={claim['run_id']}; see the local run result.")
+                    f"AutoOps 需人工介入：{_safe_text(claim['service'], 40)}",
+                    f"服务：{_safe_text(claim['service'], 60)}（故障：{_safe_text(claim['fault_code'], 60)}）\n{diagnosis_text}")
             elif status == "blocked":
                 conn.execute("UPDATE queue SET status='blocked',updated_at=?,last_error=? WHERE id=?",
                              (now, summary, claim["queue_id"]))
@@ -1361,8 +1363,13 @@ class Scheduler:
                     opened_at = now
                     # Exponential backoff keeps retrying forever; at most one breaker notice per service per local day.
                     self._enqueue_notification(conn, f"breaker:{claim['service']}:{_local_day(now)}", "breaker",
-                        "AutoOps 服务熔断", f"service={_safe_text(claim['service'])}; 连续失败 {failures} 次，退避 {backoff / 3600:.4g} 小时，"
-                        f"{_local_clock(open_until)} 后自动再试；告警仍保留，修好后计数清零。本服务当天不再重复通知。")
+                        f"AutoOps 服务熔断：{_safe_text(claim['service'], 40)}",
+                        f"服务：{_safe_text(claim['service'], 60)} 连续失败 {failures} 次，退避 {backoff / 3600:.4g} 小时，"
+                        f"{_local_clock(open_until)} 后自动再试；告警仍保留，修好后计数清零。\n最近诊断：{diagnosis_text}")
+                elif self.config.get("agent", {}).get("kind") == "dsh" and failures == 1:
+                    self._enqueue_notification(conn, f"unrepaired:{claim['queue_id']}", "needs_scan",
+                        f"AutoOps 自动修复未成功：{_safe_text(claim['service'], 40)}",
+                        f"服务：{_safe_text(claim['service'], 60)}（故障：{_safe_text(claim['fault_code'], 60)}）\n{diagnosis_text}")
                 conn.execute("INSERT INTO breakers(service,failures,open_until,opened_at,last_error) VALUES(?,?,?,?,?) "
                              "ON CONFLICT(service) DO UPDATE SET failures=excluded.failures,open_until=excluded.open_until,opened_at=excluded.opened_at,last_error=excluded.last_error",
                              (claim["service"], failures, open_until, opened_at, summary))

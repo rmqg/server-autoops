@@ -52,12 +52,13 @@ server-autoops policy check /etc/server-autoops/policy.json
 | `driver` | `docker` / `simulated` | `docker` | `simulated` 用一个 JSON 状态文件代替容器，只给 demo 和测试用 |
 | `daemon` | 字符串 | `main` | `docker.daemons` 里的别名 |
 | `container` | 字符串 | 必填（docker） | 容器名 |
-| `mutable` | 布尔 | `false` | 是否允许 start/restart/recreate/patch_config。`false` 时只能看 |
-| `login_sensitive` | 布尔 | `false` | 需要人工登录状态的服务（扫码、二次验证）。为 `true` 时**永远不改动**，避免重启把登录弄丢 |
+| `mutable` | 布尔 | `false` | 是否允许 start/restart/recreate/patch_config/run_action。`false` 时只能看 |
+| `login_sensitive` | 布尔 | `false` | 需要严格保护登录态、禁止任何自动变更时设为 `true`（若希望先尝试 1 次重启快速重连、失败再通知扫码，保持 `false` 并在 `probe` 中配置真实在线检查） |
 | `probe` | 对象 | `{"kind":"running"}` | 判断健康的探针，见下表 |
 | `probe_timeout_seconds` | 数字 1–600 | `45` | 改动后等探针通过的最长时间 |
 | `log_files` | 绝对路径数组（≤32） | `[]` | `logs` 时额外读取这些文件的尾部（脱敏） |
 | `configs` | 对象 | `{}` | 可读、可按白名单修改的配置文件，见下文 |
+| `actions` | 对象 | `{}` | 预设的自定义修复动作（`run_action`），支持 `scope: "container" \| "host"`、`argv`、`timeout_seconds`、`description` |
 | `compose` | 对象 | — | `{"file","service","project_dir"}`，允许 `recreate` 和「改配置后单服务重建」。单文件 bind mount 的配置改完必须 recreate 才生效时要写它 |
 | `state_file` | 绝对路径 | — | 只用于 `simulated` |
 
