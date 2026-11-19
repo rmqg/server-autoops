@@ -39,6 +39,7 @@ server-autoops policy check /etc/server-autoops/policy.json
 | `protected_name_patterns` | 小写字符串数组 | `["autoops","broker","listener"]` | 服务名、容器名、Compose 服务名包含其中任一片段的，永远不允许改动（只读）。用来防止它重启自己、你的反向代理、虚拟机等。设成 `[]` 表示不保护 |
 | `allow_simulated` | 布尔 | `false` | 允许 `driver: simulated`（只用于演示/测试） |
 | `code_aliases` | 对象 | `{}` | 一个故障码展开成多个，见下文 |
+| `default_targets` | 对象 | `{}` | 兜底授权：键是告警 `service`，值是服务名数组。`faults` 里没写到的故障码回退用它，仍受每个服务的 `mutable`/`login_sensitive` 约束。可以只写几个组，不要求覆盖所有故障码 |
 | `services` | 对象 | `{}` | 见下文 |
 | `faults` | 对象 | `{}` | 见下文 |
 
@@ -59,6 +60,9 @@ server-autoops policy check /etc/server-autoops/policy.json
 | `log_files` | 绝对路径数组（≤32） | `[]` | `logs` 时额外读取这些文件的尾部（脱敏） |
 | `configs` | 对象 | `{}` | 可读、可按白名单修改的配置文件，见下文 |
 | `actions` | 对象 | `{}` | 预设的自定义修复动作（`run_action`），支持 `scope: "container" \| "host"`、`argv`、`timeout_seconds`、`description` |
+| `allowed_operations` | 数组 | 全部 | 只开放其中一部分操作时写上，例如只给 `["inspect","logs","read_file","run_action","verify"]` |
+| `code_roots` | 绝对路径数组（≤2） | `[]` | 允许 `read_file`/`patch_file` 取证和打补丁的代码根目录，必须落在部署方声明的 `SERVER_AUTOOPS_CODE_ROOTS` 之内 |
+| `code_files` | 对象 | `{}` | 具名代码文件：`{"别名": {"path": 绝对路径, "description": "…"}}`，路径必须在 `code_roots` 里，最多 16 个 |
 | `compose` | 对象 | — | `{"file","service","project_dir"}`，允许 `recreate` 和「改配置后单服务重建」。单文件 bind mount 的配置改完必须 recreate 才生效时要写它 |
 | `state_file` | 绝对路径 | — | 只用于 `simulated` |
 
@@ -70,6 +74,7 @@ server-autoops policy check /etc/server-autoops/policy.json
 | `health` | — | 容器在运行且 Docker 健康状态为 `healthy` | 业务已验证 |
 | `http` | `url`；可选 `json_key` + `expected` | 容器在运行、GET 返回 2xx；给了 `json_key`（点分路径）时还要求该字段等于 `expected` | 业务已验证 |
 | `exec` | `argv`（字符串数组） | 容器在运行，且 `docker exec <容器> <argv...>` 退出码为 0 | 业务已验证 |
+| `host_exec` | `argv`（字符串数组） | 在宿主上直接执行 `argv`（不经 shell），退出码为 0。`argv[0]` 必须是绝对路径的解释器；参数里的绝对路径会被检查：不能是符号链接/硬链接，必须 root 属主、不能被 group/world 写 | 业务已验证 |
 
 探针由 broker 在宿主上执行（`http` 从宿主访问 URL），智能体影响不了它。**尽量不要只用 `running`**：它证明不了业务恢复。
 
@@ -82,6 +87,10 @@ server-autoops policy check /etc/server-autoops/policy.json
 | `editable_keys` | 数组 | 允许修改的键，JSON 可以用点分路径（`features.retry`）。为空时只能读 |
 | `bounds` | 对象 | `{"键": [最小, 最大]}`，只能给 `editable_keys` 里的数值键 |
 | `description` | 字符串 | 备注 |
+
+### 代码取证与补丁 `code_roots` / `code_files`
+
+`read_file` / `patch_file` 只能碰 `code_files` 里登记的文件，而登记路径必须位于 `code_roots` 之下。`code_roots` 自身又必须落在部署方在服务单元里写死的 `SERVER_AUTOOPS_CODE_ROOTS`（`os.pathsep` 分隔，最多 4 个绝对路径）之内——policy 不能自己扩大这个范围。补丁和配置事务一样：先备份、原子替换、拒绝符号链接和硬链接、保留属主权限。
 
 智能体看到的配置是脱敏后的（键名像 password、token、secret、api_key、cookie、authorization 的值替换成 `[REDACTED]`）。只改原本存在的标量，类型必须一致；改完写回时 JSON 会重新排版（2 空格缩进），TOML 只替换那一行的值、保留注释。
 
@@ -96,7 +105,7 @@ server-autoops policy check /etc/server-autoops/policy.json
 | `diagnose_only` | 布尔 | `false` | 只诊断，结果是 `blocked` |
 | `description` | 字符串 | — | 备注 |
 
-没有出现在 `faults` 里的告警，一律在认领前记为 `blocked`，不启动智能体。
+`faults` 里没写到的故障码，如果顶层 `default_targets` 有同一告警 `service` 的条目，就回退用那组服务；连兜底也没有的，才在认领前记为 `blocked`，不启动智能体。兜底只决定「这次能碰谁」，每个服务自己的 `mutable`、`login_sensitive` 以及 `needs_scan`/`diagnose_only` 照样生效。
 
 ### 恢复事件
 

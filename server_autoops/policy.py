@@ -22,13 +22,73 @@ CODE_RE = re.compile(r"^[^\s:]{1,160}:[^\s]{1,240}$")
 KEY_PATH_RE = re.compile(r"^[A-Za-z0-9_-]+(\.[A-Za-z0-9_-]+)*$")
 DEFAULT_DAEMONS = {"main": "unix:///var/run/docker.sock"}
 DEFAULT_PROTECTED = ["autoops", "broker", "listener"]
-PROBE_KINDS = ("running", "health", "http", "exec")
+PROBE_KINDS = ("running", "health", "http", "exec", "host_exec")
+SERVICE_OPERATIONS = frozenset({"inspect", "logs", "read_config", "patch_config", "read_file", "patch_file",
+                                "start", "restart", "recreate", "run_action", "verify"})
 DRIVERS = ("docker", "simulated")
 TOP_KEYS = {"$schema", "version", "description", "docker", "protected_name_patterns",
-            "allow_simulated", "code_aliases", "services", "faults"}
+            "allow_simulated", "code_aliases", "services", "faults", "default_targets"}
 SERVICE_KEYS = {"description", "driver", "daemon", "container", "mutable", "login_sensitive",
-                "probe", "probe_timeout_seconds", "log_files", "configs", "actions", "compose", "state_file"}
+                "probe", "probe_timeout_seconds", "log_files", "configs", "code_files", "code_roots", "allowed_operations", "actions", "compose", "state_file"}
 FAULT_KEYS = {"description", "targets", "needs_scan", "diagnose_only"}
+
+# Non-configurable ceiling: policy may select these roots, never arbitrary code,
+# credentials, senders, or the independent trusted autoops probe/actions. The
+# deployment names them once in SERVER_AUTOOPS_CODE_ROOTS (os.pathsep separated,
+# set by the root-owned service unit), so the shipped package carries no
+# site-specific paths and no policy can widen them on its own.
+CODE_ROOTS_ENV = "SERVER_AUTOOPS_CODE_ROOTS"
+CODE_PROTECTED = ("autoops", "broker", "listener", "dsh", "wecom-windows", "qemu", "network")
+
+
+def code_roots_allowed() -> tuple[Path, ...]:
+    roots: list[Path] = []
+    for item in os.environ.get(CODE_ROOTS_ENV, "").split(os.pathsep):
+        item = item.strip()
+        if not item or "\x00" in item:
+            continue
+        path = Path(item)
+        if (not path.is_absolute() or path == Path("/") or ".." in path.parts
+                or path in roots or not path.is_dir()):
+            continue
+        roots.append(path)
+        if len(roots) >= 4:
+            break
+    return tuple(roots)
+
+
+def code_relative_allowed(value: Any) -> bool:
+    if not isinstance(value, str) or not value or "\x00" in value or "\\" in value:
+        return False
+    parts = value.split("/")
+    if any(not part or part in (".", "..") or part.startswith(".") for part in parts):
+        return False
+    if Path(value).is_absolute() or Path(value).suffix != ".py":
+        return False
+    sensitive = ("autoops", "settings", "auth", "sender", "credential", "instance", "secret")
+    return not any(any(word in part.lower() for word in sensitive)
+                   or "config" in re.split(r"[_.-]", part.lower()) for part in parts)
+
+
+def code_path_allowed(value: Any) -> bool:
+    if not _abs_clean(value) or value != str(Path(value)):
+        return False
+    for root in code_roots_allowed():
+        try:
+            relative = Path(value).relative_to(root)
+        except ValueError:
+            continue
+        if code_relative_allowed(relative.as_posix()):
+            return True
+    return False
+
+
+def code_service_allowed(name: str, service: dict) -> bool:
+    compose = service.get("compose")
+    identities = (name, service.get("container"), service.get("daemon"),
+                  compose.get("service") if isinstance(compose, dict) else None)
+    return not any(word in str(identity).lower() for word in CODE_PROTECTED
+                   for identity in identities if identity is not None)
 
 
 class PolicyError(ValueError):
@@ -101,6 +161,10 @@ def validate_policy(raw: Any) -> tuple[dict[str, Any], list[str], list[str]]:
             continue
         for key in sorted(set(svc) - SERVICE_KEYS):
             errors.append(f"{where}: unknown key {key!r}")
+        operations = svc.get("allowed_operations")
+        if operations is not None and (not isinstance(operations, list) or
+                not all(isinstance(op, str) and op in SERVICE_OPERATIONS for op in operations)):
+            errors.append(f"{where}.allowed_operations must list known service operations")
         driver = svc.setdefault("driver", "docker")
         if driver not in DRIVERS:
             errors.append(f"{where}.driver must be one of {', '.join(DRIVERS)}")
@@ -127,7 +191,20 @@ def validate_policy(raw: Any) -> tuple[dict[str, Any], list[str], list[str]]:
             errors.append(f"{where}.probe.kind must be one of {', '.join(PROBE_KINDS)}")
         else:
             kind = probe["kind"]
-            allowed = {"kind"} | {"http": {"url", "json_key", "expected"}, "exec": {"argv"}}.get(kind, set())
+            allowed = {"kind"} | {"http": {"url", "json_key", "expected"}, "exec": {"argv"}, "host_exec": {"argv"}}.get(kind, set())
+            if kind == "host_exec":
+                argv = probe.get("argv")
+                if (not isinstance(argv, list) or not argv
+                        or not all(isinstance(a, str) and a and "\x00" not in a for a in argv)):
+                    errors.append(f"{where}.probe.argv must be a non-empty argv list")
+                else:
+                    if not argv[0].startswith("/"):
+                        errors.append(f"{where}.probe.argv[0] must be an absolute interpreter path")
+                    for arg in argv[1:]:
+                        if arg.startswith("-"):
+                            continue
+                        if not arg.startswith("/"):
+                            errors.append(f"{where}.probe.argv must only name absolute paths")
             for key in sorted(set(probe) - allowed):
                 errors.append(f"{where}.probe: key {key!r} is not valid for kind {kind}")
             if kind == "http":
@@ -188,6 +265,39 @@ def validate_policy(raw: Any) -> tuple[dict[str, Any], list[str], list[str]]:
                     errors.append(f"{cw}.bounds.{key} is not in editable_keys")
                 if not (isinstance(limits, list) and len(limits) == 2 and all(_number(x) for x in limits) and limits[0] <= limits[1]):
                     errors.append(f"{cw}.bounds.{key} must be [min, max] numbers with min <= max")
+        code_roots = svc.get("code_roots", [])
+        if (not isinstance(code_roots, list) or len(code_roots) > 2
+                or not all(isinstance(root, str) and root in {str(p) for p in code_roots_allowed()}
+                           for root in code_roots)
+                or (isinstance(code_roots, list) and all(isinstance(root, str) for root in code_roots)
+                    and len(set(code_roots)) != len(code_roots))):
+            errors.append(f"{where}.code_roots must list unique fixed project roots (max 2)")
+        if code_roots and operations is None:
+            errors.append(f"{where}.code_roots requires explicit allowed_operations")
+        if code_roots and not code_service_allowed(name, svc):
+            errors.append(f"{where}.code_roots: permanently protected service")
+        code_files = svc.setdefault("code_files", {})
+        if not isinstance(code_files, dict) or len(code_files) > 16:
+            errors.append(f"{where}.code_files must be an object with at most 16 aliases")
+            code_files = {}
+        if code_files and operations is None:
+            errors.append(f"{where}.code_files requires explicit allowed_operations")
+        if code_files and not code_service_allowed(name, svc):
+            errors.append(f"{where}.code_files: permanently protected service")
+        seen_code_paths = set()
+        for alias, spec in code_files.items():
+            cw = f"{where}.code_files.{alias}"
+            if not NAME_RE.fullmatch(alias):
+                errors.append(f"{cw}: invalid alias")
+            if not isinstance(spec, dict) or set(spec) - {"path", "description"}:
+                errors.append(f"{cw}: only path and description are allowed")
+                continue
+            if not code_path_allowed(spec.get("path")):
+                errors.append(f"{cw}.path must name an ordinary Python file inside a fixed project root")
+            elif spec["path"] in seen_code_paths:
+                errors.append(f"{cw}.path duplicates another alias")
+            else:
+                seen_code_paths.add(spec["path"])
         actions = svc.setdefault("actions", {})
         if not isinstance(actions, dict):
             errors.append(f"{where}.actions must be an object")
@@ -258,6 +368,23 @@ def validate_policy(raw: Any) -> tuple[dict[str, Any], list[str], list[str]]:
                 errors.append(f"{fw}.{flag} must be boolean")
         if fault.get("needs_scan") and fault.get("diagnose_only"):
             warnings.append(f"{fw}: needs_scan already implies no mutation; diagnose_only is redundant")
+    defaults = policy.setdefault("default_targets", {})
+    if not isinstance(defaults, dict):
+        errors.append("default_targets must be an object of service -> [target]")
+        defaults = {}
+        policy["default_targets"] = defaults
+    for key, targets in defaults.items():
+        dw = f"default_targets.{key}"
+        if not isinstance(key, str) or not key or any(ch.isspace() or ch == ":" for ch in key):
+            errors.append(f"{dw}: key must be an alarm service name without spaces or colons")
+        if not isinstance(targets, list) or not targets or len(targets) > 16:
+            errors.append(f"{dw} must be a non-empty list of at most 16 service names")
+            continue
+        for target in targets:
+            if target not in services:
+                errors.append(f"{dw}: {target!r} is not a defined service")
+            else:
+                referenced.add(target)
     for name in services:
         if name not in referenced:
             warnings.append(f"services.{name} is not a target of any fault; the agent can never reach it")

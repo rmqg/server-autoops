@@ -24,6 +24,8 @@ import subprocess
 import sys
 import tempfile
 import time
+import urllib.error
+import urllib.request
 import uuid
 from pathlib import Path
 from typing import Any, Callable, Iterable
@@ -56,6 +58,15 @@ OUTCOME_LABELS = {
 NOTIFICATION_LEASE_SECONDS = 120
 MAINTENANCE_DROPPED = "received during maintenance; dropped by operator"
 NOTIFICATION_RETRY_MAX_SECONDS = 6 * 3600
+# The daily notification is written by the configured model from the day's facts;
+# the deterministic compact form is only the fallback when that call fails.
+DIGEST_SYSTEM_PROMPT = (
+    "你是家用 NAS 自动运维的汇报助手。管理员只想在 30 秒内看懂今天需不需要他动手。"
+    "用不超过 200 字的中文写一段话：先给结论（一切正常 / 修好了什么 / 需要他做什么），"
+    "有问题才补关键原因，没有值得说的就直接说今天没有需要处理的事。"
+    "不要分章节、不要罗列探针名和数据库字段、不要复述日志、不要重复统计数字、"
+    "不要编造未在数据中出现的结论或成功。"
+)
 
 
 class SchedulerError(RuntimeError):
@@ -97,6 +108,15 @@ def _safe_body(value: str, limit: int = 3000) -> str:
     text = _redact_string(str(value))
     text = "".join(ch for ch in text if ch in "\n\t" or (ch >= " " and ch not in "\x7f\u2028\u2029"))
     return text[:limit]
+
+
+def _first_prose(result: dict[str, Any], fallback: str, limit: int = 400) -> str:
+    """Prefer the model's own short prose over machine-assembled probe text."""
+    for key in ("notification_summary", "diagnosis"):
+        value = result.get(key)
+        if isinstance(value, str) and value.strip():
+            return _safe_text(value, limit)
+    return _safe_text(fallback, limit)
 
 
 _SECRET_ASSIGNMENT = re.compile(r"(?i)(\b(?:password|passwd|pwd|secret|token|api[_-]?key|access[_-]?key|authorization|credential|private[_-]?key)\b\s*[:=]\s*)([^\s,;]+)")
@@ -345,15 +365,21 @@ class Scheduler:
 
     @staticmethod
     def _fault_spec(policy: dict[str, Any], service: str, code: str) -> dict[str, Any] | None:
-        """Mirror broker target resolution: a fault is mapped only if it names at least one known service."""
+        """Mirror broker target resolution: mapped faults win, unknown codes fall back to default_targets."""
         faults, services = policy.get("faults"), policy.get("services")
         if not isinstance(faults, dict) or not isinstance(services, dict):
             return None
-        fault = faults.get(f"{service}:{code}")
-        if not isinstance(fault, dict) or not isinstance(fault.get("targets"), list):
+        raw = faults.get(f"{service}:{code}")
+        fault = dict(raw) if isinstance(raw, dict) else {}
+        targets = fault.get("targets")
+        if not isinstance(targets, list) or not targets:
+            defaults = policy.get("default_targets")
+            targets = defaults.get(service) if isinstance(defaults, dict) else None
+        if not isinstance(targets, list) or not targets:
             return None
-        if not any(isinstance(name, str) and isinstance(services.get(name), dict) for name in fault["targets"]):
+        if not any(isinstance(name, str) and isinstance(services.get(name), dict) for name in targets):
             return None
+        fault["targets"] = targets
         return fault
 
     def _expand_codes(self, event: dict[str, Any]) -> list[dict[str, Any]] | None:
@@ -926,7 +952,7 @@ class Scheduler:
             return False, True
         if len(data) > MAX_LINE_BYTES:
             return False, True
-        mutating_ops = {"patch_config", "patch_config_success", "patch_config_rollback", "start", "restart", "recreate"}
+        mutating_ops = {"patch_config", "patch_config_success", "patch_config_rollback", "patch_file", "patch_file_success", "patch_file_rollback", "run_action", "start", "restart", "recreate"}
         try:
             for line in data.splitlines():
                 if not line.strip():
@@ -1330,7 +1356,7 @@ class Scheduler:
                 outcome += "_unverified"
             conn.execute("UPDATE runs SET finished_at=?,outcome=?,verified=?,exit_code=?,summary=? WHERE run_id=?",
                          (now, outcome, int(success), exit_code, summary, claim["run_id"]))
-            diagnosis_text = _safe_text(result.get("diagnosis") or summary, 600)
+            diagnosis_text = _first_prose(result, summary, 400)
             if interrupted:
                 conn.execute("UPDATE queue SET status='pending',updated_at=?,due_at=?,run_id=NULL,last_error=? WHERE id=?",
                              (now, now, summary, claim["queue_id"]))
@@ -1344,7 +1370,7 @@ class Scheduler:
                              (now, summary, claim["queue_id"]))
                 self._enqueue_notification(conn, f"needs-scan:{claim['queue_id']}", "needs_scan",
                     f"AutoOps 需人工介入：{_safe_text(claim['service'], 40)}",
-                    f"服务：{_safe_text(claim['service'], 60)}（故障：{_safe_text(claim['fault_code'], 60)}）\n{diagnosis_text}")
+                    f"{_safe_text(claim['service'], 60)} · {_safe_text(claim['fault_code'], 60)}\n{diagnosis_text}")
             elif status == "blocked":
                 conn.execute("UPDATE queue SET status='blocked',updated_at=?,last_error=? WHERE id=?",
                              (now, summary, claim["queue_id"]))
@@ -1364,12 +1390,12 @@ class Scheduler:
                     # Exponential backoff keeps retrying forever; at most one breaker notice per service per local day.
                     self._enqueue_notification(conn, f"breaker:{claim['service']}:{_local_day(now)}", "breaker",
                         f"AutoOps 服务熔断：{_safe_text(claim['service'], 40)}",
-                        f"服务：{_safe_text(claim['service'], 60)} 连续失败 {failures} 次，退避 {backoff / 3600:.4g} 小时，"
-                        f"{_local_clock(open_until)} 后自动再试；告警仍保留，修好后计数清零。\n最近诊断：{diagnosis_text}")
+                        f"{_safe_text(claim['service'], 60)} 连续失败 {failures} 次，已暂停自动修复；"
+                        f"{_local_clock(open_until)} 后自动再试，修好后计数清零。\n{diagnosis_text}")
                 elif self.config.get("agent", {}).get("kind") == "dsh" and failures == 1:
                     self._enqueue_notification(conn, f"unrepaired:{claim['queue_id']}", "needs_scan",
                         f"AutoOps 自动修复未成功：{_safe_text(claim['service'], 40)}",
-                        f"服务：{_safe_text(claim['service'], 60)}（故障：{_safe_text(claim['fault_code'], 60)}）\n{diagnosis_text}")
+                        f"{_safe_text(claim['service'], 60)} · {_safe_text(claim['fault_code'], 60)}\n{diagnosis_text}")
                 conn.execute("INSERT INTO breakers(service,failures,open_until,opened_at,last_error) VALUES(?,?,?,?,?) "
                              "ON CONFLICT(service) DO UPDATE SET failures=excluded.failures,open_until=excluded.open_until,opened_at=excluded.opened_at,last_error=excluded.last_error",
                              (claim["service"], failures, open_until, opened_at, summary))
@@ -1473,22 +1499,12 @@ class Scheduler:
             needs_scan = int(day_stats["needs_scan"] or 0)
             blocked = int(day_stats["blocked"] or 0)
             unmapped = int(day_stats["unmapped"] or 0)
-            lines = [f"AutoOps 每日汇总（{zone_label(LOCAL_TZ)}） {day}",
-                     f"运行：{total} 次；业务已验证成功：{success}；容器在跑、业务未验证：{unverified}；未成功：{failed}",
-                     f"待处理：{pending}；当日需人工检查：{needs_scan}；当日受阻：{blocked}（其中无映射、未启动 Agent：{unmapped}）",
-                     f"隔离错误日志行：{int(q_errors)}"]
-            if total == 0 and pending == 0 and needs_scan == 0 and blocked == 0 and q_errors == 0:
-                lines.append("当日无运维变更；这是每日健康心跳。")
-            maint = conn.execute("SELECT value FROM metadata WHERE key='maintenance'").fetchone()
-            if maint is not None:
-                lines.append("注意：维护模式仍然开启，自动修复暂停中（server-autoops maintenance off 关闭）。")
             run_rows = conn.execute("SELECT run_id,service,fault_code,started_at,outcome,summary FROM runs "
                                     "WHERE started_at>=? AND started_at<? ORDER BY started_at,run_id LIMIT 20", (start, end_ts)).fetchall()
-            if run_rows:
-                lines.append("当日运行详情（最多20条）：")
-            for row in run_rows[:20]:
+            facts: list[dict[str, Any]] = []
+            for row in run_rows:
                 rolled_back = "未知"
-                result_summary = row["summary"] or ""
+                prose = _safe_text(row["summary"] or "", 400)
                 try:
                     result_path = self.run_root / row["run_id"] / "result.json"
                     with result_path.open("rb") as stream:
@@ -1497,30 +1513,104 @@ class Scheduler:
                         result = _json_object(data, "runner result")
                         if isinstance(result.get("rolled_back"), bool):
                             rolled_back = "是" if result["rolled_back"] else "否"
-                        if not result_summary:
-                            result_summary = result.get("summary", "")
+                        prose = _first_prose(result, prose, 400)
                 except (OSError, SchedulerError):
                     pass
-                when = _dt.datetime.fromtimestamp(row["started_at"], LOCAL_TZ).strftime("%H:%M")
-                outcome = OUTCOME_LABELS.get(row["outcome"] or "running", _safe_text(row["outcome"], 20))
-                service = _safe_text(row["service"], 20)
-                fault = _safe_text(row["fault_code"], 22)
-                reason = _safe_text(result_summary, 36)
-                lines.append(_safe_text(f"{when} {service}/{fault} {outcome} 回滚={rolled_back} 根因:{reason}", 100))
+                facts.append({
+                    "when": _dt.datetime.fromtimestamp(row["started_at"], LOCAL_TZ).strftime("%H:%M"),
+                    "service": _safe_text(row["service"], 20),
+                    "fault": _safe_text(row["fault_code"], 22),
+                    "outcome": OUTCOME_LABELS.get(row["outcome"] or "running", _safe_text(row["outcome"], 20)),
+                    "ok": (row["outcome"] or "") in ("repaired", "healthy"),
+                    "rolled_back": rolled_back,
+                    "prose": prose,
+                })
+            stats = (f"运行 {total} 次 · 修复 {success} · 未验证 {unverified} · 未成功 {failed}"
+                     f" · 需人工 {needs_scan} · 受阻 {blocked} · 待处理 {pending}")
+            quiet = total == 0 and pending == 0 and needs_scan == 0 and blocked == 0 and q_errors == 0
+            lines = [f"AutoOps 日报（{zone_label(LOCAL_TZ)}） {day}", stats]
+            if quiet:
+                lines.append("当日没有运维变更，也没有待处理事项。")
+            if q_errors:
+                lines.append(f"隔离的错误日志行：{int(q_errors)}")
+            maint = conn.execute("SELECT value FROM metadata WHERE key='maintenance'").fetchone()
+            if maint is not None:
+                lines.append("维护模式仍然开启，自动修复暂停中（server-autoops maintenance off 关闭）。")
+            for fact in facts:
+                detail = f"：{fact['prose']}" if fact["prose"] else ""
+                lines.append(f"{fact['when']} {fact['service']}/{fact['fault']} {fact['outcome']} "
+                             f"回滚={fact['rolled_back']}{detail}")
             if total > 20:
                 lines.append(f"另有 {total - 20} 次运行未逐条展开。")
             body = "\n".join(lines)
-            if len(body) > 3000:
-                body = body[:2940] + "\n…本地报告内容已按3000字符上限截断。"
-            notice_body = body
-            if len(notice_body) > 2600:
-                report_ref = f"{self.db_path} (daily_reports.day={day})"
-                notice_body = body[:2300] + f"\n…通知摘要已截断；完整报告保存在 {report_ref}。"
+            if len(body) > 6000:
+                body = body[:5940] + "\n…本地报告内容已按6000字符上限截断。"
+            if quiet:
+                notice_body = "今天没有任何运维变更，也没有需要处理的事。"
+            else:
+                facts_text = "\n".join(
+                    f"{fact['when']} {fact['service']}/{fact['fault']} {fact['outcome']}"
+                    + (f"：{fact['prose']}" if fact["prose"] else "") for fact in facts)
+                digest = self._agent_daily_digest(day, stats, facts_text)
+                notice_body = digest if digest else self._compact_daily_notice(facts, stats)
             key = f"daily:{day}"
             conn.execute("INSERT INTO daily_reports(day,body,created_at,notification_key) VALUES(?,?,?,?)",
                          (day, body, self.clock(), key))
-            self._enqueue_notification(conn, key, "daily", "AutoOps 每日汇总", notice_body)
+            self._enqueue_notification(conn, key, "daily", f"AutoOps 日报 {day}", notice_body)
         return {"day": day, "body": body, "created": True}
+
+    def _compact_daily_notice(self, facts: list[dict[str, Any]], stats: str) -> str:
+        """Deterministic fallback: one line per item that actually needs a human."""
+        lines: list[str] = []
+        failing = [fact for fact in facts if not fact["ok"]]
+        repaired = [fact for fact in facts if fact["ok"]]
+        for fact in failing[:5]:
+            lines.append(f"{fact['service']} {fact['outcome']}：{fact['prose'][:110]}")
+        if len(failing) > 5:
+            lines.append(f"另有 {len(failing) - 5} 项异常，详见本地报告。")
+        if repaired:
+            names = "、".join(fact["service"] for fact in repaired[:5])
+            lines.append(f"自动修复正常 {len(repaired)} 次：{names}")
+        lines.append(stats)
+        return "\n".join(lines)
+
+    def _agent_daily_digest(self, day: str, stats: str, facts_text: str) -> str | None:
+        """Let the configured model turn the day's facts into one short paragraph.
+
+        The model only writes the pushed wording; figures and outcomes stay as recorded.
+        Returns None when digest writing is disabled or unreachable, so the caller can
+        fall back to the deterministic compact list.
+        """
+        setting = self.config.get("daily_digest")
+        if setting is False or (isinstance(setting, dict) and setting.get("enabled") is False):
+            return None
+        setting = setting if isinstance(setting, dict) else {}
+        model = (self.config.get("agent") or {}).get("model") or {}
+        try:
+            from .runner import credential
+            api_key = credential(Path(str(model["env_file"])), str(model["api_key_env"]))
+        except (KeyError, OSError, RuntimeError, ValueError):
+            return None
+        prompt = f"日期：{day}\n统计：{stats}\n当日运行记录：\n{facts_text or '无'}"
+        payload = json.dumps({
+            "model": model.get("model"),
+            "messages": [{"role": "system", "content": DIGEST_SYSTEM_PROMPT},
+                         {"role": "user", "content": prompt}],
+            "temperature": 0.2,
+            "max_tokens": int(setting.get("max_tokens", 600)),
+        }, ensure_ascii=False).encode("utf-8")
+        request = urllib.request.Request(
+            str(model.get("base_url", "")).rstrip("/") + "/chat/completions", data=payload, method="POST",
+            headers={"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"})
+        try:
+            with urllib.request.urlopen(request, timeout=float(setting.get("timeout_seconds", 25))) as response:
+                data = json.loads(response.read(262144))
+            text = data["choices"][0]["message"]["content"]
+        except (OSError, ValueError, KeyError, IndexError, TypeError, urllib.error.URLError):
+            return None
+        if not isinstance(text, str) or not text.strip():
+            return None
+        return _safe_text(text, int(setting.get("max_chars", 400)))
 
     def maybe_daily_report(self) -> dict[str, Any] | None:
         now = _dt.datetime.fromtimestamp(self.clock(), LOCAL_TZ)

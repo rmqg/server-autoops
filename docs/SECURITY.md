@@ -45,7 +45,8 @@
 broker 以 root 身份运行在 runner 进程里（不在智能体容器里，所以容器被 OOM 杀掉也不会留下半改的配置）。它只做这些事，而且每个参数都来自 policy，不来自请求：
 
 - **Docker 命令**：`<policy.docker.bin> -H <policy.docker.daemons[服务.daemon]> <inspect|logs|start|restart> <服务.container>`，以及 `compose -f <固定文件> --project-directory <固定目录> up -d --no-deps --no-build --pull never --force-recreate <固定服务>`。全部用参数数组调用（`shell=False`），并清除 `DOCKER_HOST`、`DOCKER_CONTEXT` 等环境变量。守护进程只允许本地 `unix:///` socket，不允许 TCP。
-- **探针**：`running`（容器在跑；有 Docker 健康检查时自动用它）、`health`（Docker 健康检查为 healthy）、`http`（GET 固定 URL，2xx，可选 JSON 字段等于期望值；URL 不允许带账号密码）、`exec`（在容器里执行 policy 固定的 argv）。
+- **探针**：`running`（容器在跑；有 Docker 健康检查时自动用它）、`health`（Docker 健康检查为 healthy）、`http`（GET 固定 URL，2xx，可选 JSON 字段等于期望值；URL 不允许带账号密码）、`exec`（在容器里执行 policy 固定的 argv）、`host_exec`（在宿主上执行 policy 固定的 argv，不经 shell；`argv[0]` 必须是绝对路径的解释器，参数里的绝对路径必须是 root 属主、非 group/world 可写，且不是符号链接或硬链接）。
+- **代码根**：`read_file`/`patch_file` 能碰的文件必须同时落在 policy 的 `code_roots` 和部署方通过 `SERVER_AUTOOPS_CODE_ROOTS` 声明的目录之内。环境变量由 root 管理的服务单元设置，policy 与模型都改不了它，所以拿到写 policy 权限的人也无法把可改代码扩散到任意目录。
 - **读写文件**：只读写 policy 列出的绝对路径；拒绝符号链接、硬链接（`st_nlink != 1`）、路径中含 `..`、父目录链中有符号链接；读之前和打开之后核对 inode 一致；单文件上限 2 MiB。
 - **审计**：每个改动写入 `runs/<run_id>/actions.jsonl`（`O_APPEND`、`fsync`），配置备份写进 `runs/<run_id>/backups/`（`O_EXCL`，保持原属主和权限）。
 

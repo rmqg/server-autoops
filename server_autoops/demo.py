@@ -305,7 +305,7 @@ def run_demo(base: Path, timezone: str) -> dict[str, Any]:
     report = sched.create_daily_report(_local_day())
     delivery = sched.deliver_notifications()
     sent = [json.loads(x) for x in (base / "notifications.jsonl").read_text().splitlines()]
-    checks.add("日报生成并写入通知出站箱", report["created"] and "AutoOps 每日汇总" in report["body"] and delivery["failed"] == 0,
+    checks.add("日报生成并写入通知出站箱", report["created"] and "运行 " in report["body"] and delivery["failed"] == 0,
                f"已发送 {delivery['sent']} 条")
     checks.add("全部通知都是 passive 级别", bool(sent) and all(x["level"] == "passive" for x in sent))
     sched.close()

@@ -1,15 +1,21 @@
-# server-autoops v0.1.0
+# server-autoops v0.1.1
 
-第一个公开版本：Linux 服务器上「有白名单的」自动运维。看门狗报故障 → 持久队列 → 受限容器里的 LLM 智能体只能通过 root broker 执行 `policy.json` 白名单里的动作 → 结论只认 broker 的探针。
+比 0.1.0 更少「写死的规则」，更多交给 policy 和智能体自己判断；同时把作者本机的路径从包里彻底搬了出去，任何人都能用自己的目录跑。
 
 ## 亮点
 
-- `policy.json` 白名单（JSON Schema + `server-autoops policy check`）：目标由告警决定，只改白名单里的标量配置键并有范围限制；需要扫码/只诊断的故障不会被改动；名单外的一律拒绝并记为受阻。
-- 配置事务：CAS、保持属主权限的备份、原子替换、重启或单服务重建、业务探针、失败自动回滚。
-- 不失控：冷却、每小时/每天上限、连续失败熔断后指数退避（1h→24h，永不放弃）、低内存只延后、全局同时一个智能体。
-- 维护模式：动服务之前 `server-autoops maintenance on`，告警照常记录但暂停自动修复，默认 6 小时后自动结束。
-- 通知默认全部 Bark `passive`；Bark 地址只放在 600 权限的文件里。
-- `demo`：不用 Docker、不用模型、不联网的端到端演示（21 项检查）；`doctor`：自检并给出修复命令。
+- **故障码兜底**：`default_targets` 让没登记过的故障码按告警组回退到一组默认目标，不再一律「无映射、受阻」。要不要真的动手，仍由每个服务的 `mutable`/`login_sensitive` 和故障的 `needs_scan`/`diagnose_only` 决定。
+- **代码取证与补丁**：智能体可以 `read_file` 只读取证、`patch_file` 打补丁，范围由服务级 `code_roots`/`code_files` 限定，而这两个又必须落在部署方用 `SERVER_AUTOOPS_CODE_ROOTS` 声明的目录里——policy 扩大不了，模型更扩大不了。补丁同样走备份、CAS、原子替换、探针验证和回滚。
+- **`host_exec` 探针**：在宿主上直接执行 policy 写明的 argv（不经 shell），脚本必须 root 属主、非 group/world 可写、不是链接。
+- **更像人写的通知**：日报正文由模型写一句话结论文本再推送，正文带一行统计；安静日只发一句。「需人工」「连续失败熔断」也只保留结论和最关键的因果，不再把整段诊断原文灌进推送。
+- **不再刷屏**：微信桌面看门狗连续 3 次异常、连续 2 次恢复才通知，秒级抖动不会再来回「异常 / 已恢复」。
+
+## 升级说明
+
+- 包内不再有任何站点路径。用到 `read_file`/`patch_file` 的部署，需要在服务单元里设置
+  `SERVER_AUTOOPS_CODE_ROOTS=<目录1>:<目录2>`（`os.pathsep` 分隔，最多 4 个绝对路径）。
+- 需要把智能体结案摘要写给下游日报的，在 `config.json` 里加 `agent.notification_summary_path`（绝对文件路径）；不配就不发布。
+- 配置、policy 格式版本仍是 1，旧 `policy.json` 可直接用。
 
 ## 要求
 
@@ -23,19 +29,3 @@
 | Python | 3.10.12、3.11.2、3.12.3、3.14.10 | 3.13（仅 CI）；≤3.9 不支持 |
 | 发行版 | Debian 12、Ubuntu 24.04（全新容器，arm64 + amd64）；iStoreOS 24.10.8（替换生产服务） | 其他发行版 |
 | Docker | 29.4.0 arm64、27.3.1 amd64：重启、启动、日志、HTTP 探针、改配置与回滚 | 其他版本；`recreate`、`exec` 探针只有单元测试 |
-| 智能体 | dsh 0.2.1-rc.5：本地假模型，以及真实 OpenAI 兼容模型修复 canary | amd64 镜像构建 |
-| 服务管理 | 无服务管理器、OpenWrt procd | systemd |
-
-详细记录见 `docs/VALIDATION.md`、`docs/COMPATIBILITY.md`。
-
-## 安装
-
-```sh
-sha256sum -c SHA256SUMS
-gh attestation verify server-autoops-0.1.0.tar.gz --repo rmqg/server-autoops
-tar xzf server-autoops-0.1.0.tar.gz && cd server-autoops-0.1.0
-./bin/server-autoops demo
-sudo ./install.sh && sudo server-autoops doctor
-```
-
-然后按 `docs/INSTALL.md` 写白名单、构建智能体镜像、填模型密钥、配通知。

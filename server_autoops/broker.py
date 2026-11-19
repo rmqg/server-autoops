@@ -25,12 +25,15 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
-from .policy import validate_policy
+from .policy import validate_policy, code_path_allowed, code_service_allowed, code_roots_allowed, code_relative_allowed
 
 
 MAX_MESSAGE = 128 * 1024
 MAX_LOG_BYTES = 32 * 1024
 MAX_LOG_FILES = 32
+MAX_CODE_BYTES = 256 * 1024
+MAX_CODE_READ_BYTES = 16 * 1024
+MAX_CODE_PATCH_BYTES = 32 * 1024
 _SECRET = re.compile(
     r"(?i)(authorization|proxy-authorization|password|passwd|token|secret|api[_-]?key|cookie|bark[_-]?url)"
     r"([\"']?\s*[:=]\s*[\"']?)((?:bearer|basic)\s+[^\s,;\"']+|[^\s,;\"']+)"
@@ -64,7 +67,7 @@ class Broker:
         if not isinstance(request, dict):
             raise BrokerError("request must be an object")
         op = request.get("op")
-        if op not in {"inventory", "inspect", "logs", "read_config", "patch_config", "start", "restart", "recreate", "run_action", "verify", "finish"}:
+        if op not in {"inventory", "inspect", "logs", "read_config", "patch_config", "read_file", "patch_file", "start", "restart", "recreate", "run_action", "verify", "finish"}:
             raise BrokerError("unsupported operation")
         with self._lock:
             if op == "inventory":
@@ -73,10 +76,20 @@ class Broker:
                 return self._finish(request)
             target = request.get("target")
             service = self._service(target)
+            if "allowed_operations" in service and op not in service["allowed_operations"]:
+                raise BrokerError("operation is not authorized for this service")
             if op == "inspect":
                 return self._inspect(service)
             if op == "logs":
                 return self._logs(service)
+            if op in {"read_file", "patch_file"}:
+                try:
+                    return self._read_file(service, request) if op == "read_file" else self._patch_file(service, request)
+                except Exception as exc:
+                    self._audit({"op": op + "_denied_or_failed", "target": target,
+                                 "code_file": self._safe_summary(request.get("code_file")),
+                                 "error": type(exc).__name__})
+                    raise
             if op == "read_config":
                 return self._read_config(service, request.get("config"))
             if op == "patch_config":
@@ -103,6 +116,13 @@ class Broker:
             fault = {}
         self._event_fault = fault
         targets = fault.get("targets", [])
+        if not isinstance(targets, list) or not targets:
+            # Unknown or unmapped fault codes fall back to the service group's
+            # default targets instead of stalling as "no policy mapping". Each
+            # target still has to be individually mutable and not login_sensitive.
+            defaults = self.policy.get("default_targets", {})
+            if isinstance(defaults, dict) and isinstance(defaults.get(service_name), list):
+                targets = defaults[service_name]
         if isinstance(targets, list):
             self._allowed = {name for name in targets if isinstance(name, str) and name in services and isinstance(services[name], dict)}
 
@@ -140,7 +160,11 @@ class Broker:
             actions = service.get("actions", {})
             action_info = {act: {"description": spec.get("description", ""), "scope": spec.get("scope", "container")} for act, spec in actions.items() if isinstance(spec, dict)}
             mutable = bool(service.get("mutable") and not service.get("login_sensitive") and not self._is_protected_target(name, service))
-            entries.append({"target": name, "daemon": service.get("daemon"), "mutable": mutable, "probe": service.get("probe", {}).get("kind"), "configs": config_info, "actions": action_info})
+            entries.append({"target": name, "daemon": service.get("daemon"), "mutable": mutable, "probe": service.get("probe", {}).get("kind"), "configs": config_info, "actions": action_info,
+                            "code_files": {alias: {"description": spec.get("description", "")} for alias, spec in service.get("code_files", {}).items()},
+                            "code_roots": service.get("code_roots", []),
+                            "code_file_help": "alias or relative Python path; prefix with root directory name to disambiguate (deployment/file.py or wechat_export_send/file.py). Sensitive modules and links are denied.",
+                            "allowed_operations": service.get("allowed_operations")})
         return {"targets": entries, "fault": {"needs_scan": bool(self._event_fault.get("needs_scan")), "diagnose_only": bool(self._event_fault.get("diagnose_only"))}}
 
     def _docker_prefix(self, service: dict) -> list[str]:
@@ -251,6 +275,32 @@ class Broker:
                 return {"ok": running and ok, "kind": kind, "running": running, "http_status": status_code}
             except (urllib.error.URLError, TimeoutError, OSError, ValueError) as exc:
                 return {"ok": False, "kind": kind, "running": running, "error": type(exc).__name__}
+        if kind == "host_exec":
+            argv = probe.get("argv")
+            if (not isinstance(argv, list) or not argv
+                    or any(not isinstance(arg, str) or not arg or "\x00" in arg for arg in argv)
+                    or not argv[0].startswith("/")):
+                raise BrokerError("unsafe host probe mapping")
+            for arg in argv[1:]:
+                if arg.startswith("/"):
+                    # The script is never agent-editable: reject symlinks/hardlinks
+                    # and anything not root-owned or group/world writable.
+                    self._read_regular(arg)
+                    script_stat = Path(arg).lstat()
+                    if script_stat.st_uid != 0 or script_stat.st_mode & 0o022:
+                        raise BrokerError("host probe must be root-owned and not group/world writable")
+            try:
+                result = subprocess.run(argv, capture_output=True, timeout=30, check=False,
+                                        shell=False, env=self._docker_env())
+                # Bounded diagnostic evidence only; exit status decides success, not JSON claims.
+                stdout = result.stdout or b""
+                stderr = result.stderr or b""
+                return {"ok": running and result.returncode == 0, "kind": kind,
+                        "running": running, "exit_code": result.returncode,
+                        "stdout": self._redact_code(stdout[-4096:].decode("utf-8", errors="replace")),
+                        "stderr": self._redact_code(stderr[-1024:].decode("utf-8", errors="replace"))}
+            except (OSError, subprocess.TimeoutExpired) as exc:
+                return {"ok": False, "kind": kind, "running": running, "error": type(exc).__name__}
         if kind == "exec":
             argv = probe.get("argv")
             if not isinstance(argv, list) or not argv or any(not isinstance(arg, str) or not arg or "\x00" in arg for arg in argv):
@@ -304,6 +354,7 @@ class Broker:
         logs = self._redact(raw_logs[-(MAX_LOG_BYTES // 2):].decode("utf-8", errors="ignore"))
         used = len(logs.encode("utf-8"))
         files = {}
+        file_errors = {}
         paths = service.get("log_files", [])
         if not isinstance(paths, list) or len(paths) > MAX_LOG_FILES:
             raise BrokerError("invalid log file mapping")
@@ -312,11 +363,159 @@ class Broker:
                 raise BrokerError("invalid mapped log path")
             remaining = max(0, MAX_LOG_BYTES - used)
             allocation = remaining // (len(paths) - index) if paths else 0
-            text = self._read_regular_tail(path, allocation)
             label = re.sub(r"[\x00-\x1f\x7f]", "_", Path(path).name)[:128]
-            files[f"{index}:{label}"] = text
+            key = f"{index}:{label}"
+            try:
+                text = self._read_regular_tail(path, allocation)
+            except (BrokerError, OSError) as exc:
+                # One absent/unsafe log must not hide evidence from other mapped files.
+                # Return only a bounded status, never OS messages containing paths/secrets.
+                missing = isinstance(exc, FileNotFoundError) or isinstance(exc.__cause__, FileNotFoundError)
+                file_errors[key] = {"status": "missing" if missing else "error", "error": type(exc).__name__}
+                continue
+            files[key] = text
             used += len(text.encode("utf-8"))
-        return {"logs": logs, "files": files}
+        return {"logs": logs, "files": files, "file_errors": file_errors}
+
+    def _code_file(self, service: dict, request: dict) -> Path:
+        alias = request.get("code_file")
+        if not code_service_allowed(request["target"], service):
+            raise BrokerError("code access to protected target is denied")
+        spec = service.get("code_files", {}).get(alias) if isinstance(alias, str) else None
+        if isinstance(spec, dict):
+            if not code_path_allowed(spec.get("path")):
+                raise BrokerError("prohibited code file alias")
+            return Path(spec["path"])
+        if not code_relative_allowed(alias):
+            raise BrokerError("unknown or prohibited code file alias or relative path")
+        roots = service.get("code_roots", [])
+        if not isinstance(roots, list) or any(root not in {str(p) for p in code_roots_allowed()} for root in roots):
+            raise BrokerError("invalid code roots")
+        # A root-name prefix is optional; unqualified paths must resolve uniquely.
+        qualified = [Path(root) for root in roots if alias.startswith(Path(root).name + "/")]
+        candidates = []
+        for root in qualified or [Path(root) for root in roots]:
+            relative = alias[len(root.name) + 1:] if qualified else alias
+            path = root / relative
+            if not code_path_allowed(str(path)):
+                continue
+            try:
+                path.lstat()
+            except FileNotFoundError:
+                continue
+            candidates.append(path)
+        if len(candidates) != 1:
+            raise BrokerError("unknown or ambiguous code file relative path; use root directory prefix")
+        # _read_regular and _atomic_replace reject symlinks, hardlinks and linked parents.
+        return candidates[0]
+
+    def _read_code(self, path: Path) -> bytes:
+        data = self._read_regular(path, max_bytes=MAX_CODE_BYTES)
+        try:
+            data.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise BrokerError("code file must be UTF-8") from exc
+        return data
+
+    @staticmethod
+    def _redact_code(text: str) -> str:
+        # Redact whole sensitive assignment lines, including quoted/multiline values.
+        text = re.sub(r"(?s)-----BEGIN [^-]*PRIVATE KEY-----.*?-----END [^-]*PRIVATE KEY-----", "[REDACTED]", text)
+        text = re.sub(r"(?s)(?i:([A-Za-z_]*(?:password|passwd|token|secret|api_key|cookie|authorization|bark_url)[A-Za-z_]*))\s*(?::[^=\n]+)?=\s*(?:\"\"\".*?\"\"\"|'''.*?'''|[^\n]*)", r"\1 = '[REDACTED]'", text)
+        text = re.sub(r"https?://[^\s\"'<>]+", "[REDACTED_URL]", text)
+        text = re.sub(r"\b(?:sk-|ghp_|github_pat_)[A-Za-z0-9_-]{8,}", "[REDACTED]", text)
+        return Broker._redact(text)
+
+    def _read_file(self, service: dict, request: dict) -> dict:
+        if set(request) - {"op", "target", "code_file", "offset"}:
+            raise BrokerError("unsupported read_file fields")
+        path = self._code_file(service, request)
+        data = self._read_code(path)
+        offset = request.get("offset", 0)
+        if type(offset) is not int or offset < 0:
+            raise BrokerError("offset must be a nonnegative byte offset")
+        # Redact the complete file BEFORE pagination, so offsets cannot expose a secret suffix.
+        safe = self._redact_code(data.decode("utf-8")).encode("utf-8")
+        chunk = safe[offset:offset + MAX_CODE_READ_BYTES]
+        content = chunk.decode("utf-8", errors="ignore")
+        self._audit({"op": "read_file", "target": request["target"], "code_file": request["code_file"]})
+        return {"code_file": request["code_file"], "sha256": hashlib.sha256(data).hexdigest(),
+                "content": content, "offset": offset, "next_offset": offset + len(chunk),
+                "truncated": offset + len(chunk) < len(safe), "total_bytes": len(data)}
+
+    def _patch_file(self, service: dict, request: dict) -> dict:
+        if set(request) - {"op", "target", "code_file", "expected_sha256", "old_string", "new_string"}:
+            raise BrokerError("unsupported patch_file fields")
+        target, alias = request["target"], request.get("code_file")
+        self._mutable_service(target, service)
+        path = self._code_file(service, request)
+        original = self._read_code(path)
+        before_hash = hashlib.sha256(original).hexdigest()
+        if request.get("expected_sha256") != before_hash:
+            raise BrokerError("code file CAS mismatch")
+        old, new = request.get("old_string"), request.get("new_string")
+        if not isinstance(old, str) or not old or not isinstance(new, str) or old == new:
+            raise BrokerError("patch needs nonempty old_string and distinct new_string")
+        if any(len(s.encode("utf-8")) > MAX_CODE_PATCH_BYTES for s in (old, new)):
+            raise BrokerError("patch exceeds size limit")
+        text = original.decode("utf-8")
+        if text.count(old) != 1:
+            raise BrokerError("old_string must match exactly once")
+        replacement = text.replace(old, new, 1).encode("utf-8")
+        if len(replacement) > MAX_CODE_BYTES:
+            raise BrokerError("patched file exceeds size limit")
+        # Static compilation only: never import, eval or execute agent-supplied code.
+        try:
+            compile(replacement, str(path), "exec", dont_inherit=True)
+        except (SyntaxError, ValueError, OverflowError) as exc:
+            raise BrokerError("Python compilation failed; original file unchanged") from exc
+        backup_dir = self.run_dir / "backups"
+        backup_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+        self._assert_safe_directory(backup_dir)
+        source_stat = path.lstat()
+        mode = stat.S_IMODE(source_stat.st_mode)
+        backup = backup_dir / ("code-" + os.urandom(16).hex() + ".bak")
+        self._exclusive_write(backup, original, 0o600)
+        self._audit({"op": "patch_file", "target": target, "code_file": alias,
+                     "before": before_hash, "backup": backup.name})
+        installed = False
+        try:
+            if self._read_code(path) != original:
+                raise BrokerError("code file changed before installation")
+            self._atomic_replace(path, replacement, mode, expected_sha256=before_hash)
+            installed = True
+            installed_data = self._read_code(path)
+            if installed_data != replacement:
+                raise BrokerError("installed code changed before validation")
+            compile(installed_data, str(path), "exec", dont_inherit=True)
+            # No implicit restart/recreate: deployment actions must be separately authorized.
+            probe = self._wait_for_probe(service)
+            if not probe.get("ok"):
+                raise BrokerError("post-patch business probe failed")
+            business_verified = probe.get("kind") in {"http", "exec", "host_exec", "health"}
+            after_hash = hashlib.sha256(replacement).hexdigest()
+            self._audit({"op": "patch_file_success", "target": target, "code_file": alias,
+                         "sha256": after_hash, "verified": True, "business_verified": business_verified})
+            return {"ok": True, "sha256": after_hash, "backup": backup.name,
+                    "compiled": True, "verified": True, "business_verified": business_verified, "probe": probe}
+        except Exception as exc:
+            rollback_error = None
+            probe = None
+            file_restored = False
+            try:
+                if installed:
+                    self._atomic_replace(path, original, mode)
+                    file_restored = self._read_code(path) == original
+                    probe = self._wait_for_probe(service)
+                    if not probe.get("ok"):
+                        rollback_error = "original file restored but probe failed"
+            except Exception as rollback_exc:
+                rollback_error = type(rollback_exc).__name__
+            self._audit({"op": "patch_file_rollback", "target": target, "code_file": alias,
+                         "rolled_back": installed and rollback_error is None, "file_restored": file_restored,
+                         "error": rollback_error or type(exc).__name__})
+            raise BrokerError("code patch failed; original file restored" if installed and rollback_error is None
+                              else "code patch failed; rollback verification failed" if installed else "code patch failed before installation") from exc
 
     def _read_config(self, service: dict, alias: Any) -> dict:
         config = self._config(service, alias)
@@ -436,6 +635,8 @@ class Broker:
         scope = spec.get("scope", "container")
         timeout = int(spec.get("timeout_seconds", 60))
         before = self._probe(service)
+        self._audit({"op": "run_action", "phase": "intent", "target": next((name for name in self._allowed if self.policy['services'][name] is service), None),
+                     "container": service.get("container"), "action": action_name, "result": False})
         try:
             if scope == "host":
                 res = subprocess.run(argv, capture_output=True, text=True, timeout=timeout, check=False, shell=False, env=self._docker_env())
@@ -445,12 +646,14 @@ class Broker:
                     raise BrokerError("invalid fixed service mapping")
                 res = subprocess.run([*self._docker_prefix(service), "exec", container, *argv], capture_output=True, text=True, timeout=timeout, check=False, shell=False, env=self._docker_env())
         except (OSError, subprocess.TimeoutExpired) as exc:
-            raise BrokerError(f"action execution failed: {type(exc).__name__}") from exc
+            self._audit({"op": "run_action", "phase": "unknown", "container": service.get("container"),
+                         "action": action_name, "result": False, "error": type(exc).__name__})
+            raise BrokerError(f"action execution failed; outcome uncertain: {type(exc).__name__}") from exc
         after = self._wait_for_probe(service) if res.returncode == 0 else self._probe(service)
         stdout_tail = self._redact((res.stdout or "")[-2048:])
         stderr_tail = self._redact((res.stderr or "")[-2048:])
         outcome = {"ok": res.returncode == 0 and after["ok"], "action": action_name, "exit_code": res.returncode, "stdout": stdout_tail, "stderr": stderr_tail, "before": before, "after": after}
-        self._audit({"op": "run_action", "container": service.get("container"), "action": action_name, "exit_code": res.returncode, "result": outcome["ok"]})
+        self._audit({"op": "run_action", "phase": "completed", "container": service.get("container"), "action": action_name, "exit_code": res.returncode, "result": outcome["ok"]})
         return outcome
 
     def _recreate_command(self, service: dict) -> subprocess.CompletedProcess:
@@ -481,6 +684,9 @@ class Broker:
         return {"verified": probe["ok"], "probe": probe}
 
     def _finish(self, request: dict) -> dict:
+        notification_summary = None
+        if "notification_summary" in request:
+            notification_summary = self._notification_summary(request["notification_summary"])
         results = []
         for target in sorted(self._allowed):
             service = self.policy.get("services", {}).get(target)
@@ -510,7 +716,7 @@ class Broker:
         elif self._event_fault.get("diagnose_only") is True:
             status, verified, conclusion = "blocked", False, "该故障仅允许诊断"
         elif verified:
-            changed = any(action.get("op") in {"start", "restart", "recreate", "run_action", "patch_config_success"} and action.get("result", action.get("verified", False)) is True for action in actions)
+            changed = any(action.get("op") in {"start", "restart", "recreate", "run_action", "patch_config_success", "patch_file_success"} and action.get("result", action.get("verified", False)) is True for action in actions)
             if business_verified:
                 status, conclusion = ("repaired", "授权目标修复后均健康") if changed else ("healthy", "授权目标均健康")
             else:
@@ -519,7 +725,9 @@ class Broker:
             status, verified, conclusion = "failed", False, "仍有授权目标未通过探针"
         summary = f"诊断：{diagnosis}；探针结论：{probe_conclusion}；状态：{conclusion}"
         result = {"status": status, "summary": summary, "diagnosis": diagnosis, "verification": results, "verified": verified,
-                  "business_verified": bool(business_verified and verified), "actions": actions, "rolled_back": any(a.get("op") == "patch_config_rollback" and a.get("rolled_back") for a in actions)}
+                  "business_verified": bool(business_verified and verified), "actions": actions, "rolled_back": any(a.get("op") in {"patch_config_rollback", "patch_file_rollback"} and a.get("rolled_back") for a in actions)}
+        if notification_summary is not None:
+            result["notification_summary"] = notification_summary
         out = self.run_dir / "result.json"
         self._atomic_replace(out, (json.dumps(result, ensure_ascii=False, sort_keys=True) + "\n").encode(), 0o600, allow_missing=True)
         return result
@@ -550,7 +758,7 @@ class Broker:
             if stat.S_ISLNK(st.st_mode) or not stat.S_ISDIR(st.st_mode):
                 raise BrokerError("unsafe directory path")
 
-    def _read_regular(self, path_value: str) -> bytes:
+    def _read_regular(self, path_value: str, max_bytes: int = 2 * 1024 * 1024) -> bytes:
         path = Path(path_value)
         if not path.is_absolute() or ".." in path.parts:
             raise BrokerError("unsafe mapped path")
@@ -568,8 +776,8 @@ class Broker:
             if not stat.S_ISREG(current.st_mode) or current.st_nlink != 1 or (current.st_dev, current.st_ino) != (st.st_dev, st.st_ino):
                 raise BrokerError("mapped file changed during access")
             with os.fdopen(fd, "rb", closefd=False) as stream:
-                data = stream.read(2 * 1024 * 1024 + 1)
-            if len(data) > 2 * 1024 * 1024:
+                data = stream.read(max_bytes + 1)
+            if len(data) > max_bytes:
                 raise BrokerError("mapped file exceeds size limit")
             return data
         finally:
@@ -679,6 +887,16 @@ class Broker:
         return value
 
     @staticmethod
+    def _notification_summary(value: Any) -> str:
+        """Only explicit model prose is eligible; never synthesize a fallback."""
+        if not isinstance(value, str) or not value.strip() or len(value) > 800:
+            raise BrokerError("notification_summary must be a non-empty string of at most 800 characters")
+        # Preserve the agent's wording/whitespace, except credentials and URLs.
+        value = re.sub(r'https?://[^\s<>\"\']+', '[URL REDACTED]', value)
+        value = re.sub(r'(?i)(bearer\s+)\S+', r'\1[REDACTED]', value)
+        return Broker._redact(value)[:800]
+
+    @staticmethod
     def _safe_summary(value: Any) -> str:
         if not isinstance(value, str):
             return ""
@@ -720,7 +938,8 @@ class Broker:
             os.close(fd)
 
     @classmethod
-    def _atomic_replace(cls, path: Path, data: bytes, mode: int, allow_missing: bool = False) -> None:
+    def _atomic_replace(cls, path: Path, data: bytes, mode: int, allow_missing: bool = False,
+                        expected_sha256: str | None = None, owner: tuple[int, int] | None = None) -> None:
         path = Path(path)
         cls._assert_safe_directory(path.parent)
         try:
@@ -729,12 +948,28 @@ class Broker:
             if not allow_missing:
                 raise BrokerError("replacement target disappeared")
             old = None
+        if expected_sha256 is not None:
+            if old is None:
+                raise BrokerError("replacement CAS target disappeared")
+            fd_check = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+            try:
+                checked = os.fstat(fd_check)
+                if not stat.S_ISREG(checked.st_mode) or checked.st_nlink != 1 or (checked.st_dev, checked.st_ino) != (old.st_dev, old.st_ino):
+                    raise BrokerError("replacement CAS target changed")
+                with os.fdopen(fd_check, "rb", closefd=False) as stream:
+                    check_data = stream.read(MAX_CODE_BYTES + 1)
+                if hashlib.sha256(check_data).hexdigest() != expected_sha256:
+                    raise BrokerError("replacement CAS mismatch")
+            finally:
+                os.close(fd_check)
         if old is not None and (stat.S_ISLNK(old.st_mode) or not stat.S_ISREG(old.st_mode) or old.st_nlink != 1):
             raise BrokerError("unsafe replacement target")
         fd, temp_name = tempfile.mkstemp(prefix=".autoops-", dir=path.parent)
         temp = Path(temp_name)
         try:
-            if old is not None:
+            if owner is not None:
+                os.fchown(fd, *owner)
+            elif old is not None:
                 os.fchown(fd, old.st_uid, old.st_gid)
             os.fchmod(fd, mode)
             with os.fdopen(fd, "wb", closefd=False) as stream:

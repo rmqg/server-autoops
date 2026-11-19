@@ -338,14 +338,14 @@ class SchedulerBehaviorTests(unittest.TestCase):
         report = self.scheduler.create_daily_report("2026-11-08")
         self.assertTrue(report["created"])
         self.assertIn("svc/PATCH", report["body"])
-        self.assertIn("根因:root cause summary", report["body"])
+        self.assertIn("回滚=是：root cause summary", report["body"])
         self.assertIn("回滚=是", report["body"])
         self.assertFalse(self.scheduler.create_daily_report("2026-11-08")["created"])
 
         empty = self._new_scheduler({"notifications_enabled": False}, db_name="heartbeat.sqlite3")
         self.addCleanup(empty.close)
         heartbeat = empty.create_daily_report("2026-11-08")
-        self.assertIn("每日健康心跳", heartbeat["body"])
+        self.assertIn("当日没有运维变更", heartbeat["body"])
         self.assertEqual(empty.status()["notifications"]["suppressed"], 1)
         self.assertEqual(empty.deliver_notifications()["sent"], 0)
 
@@ -537,7 +537,7 @@ class SchedulerBehaviorTests(unittest.TestCase):
         self.assertEqual(calls, [])
         self.assertEqual(self._run_rows(self.scheduler), [])
         report = self.scheduler.create_daily_report("2026-11-08")["body"]
-        self.assertIn("当日受阻：1（其中无映射、未启动 Agent：1）", report)
+        self.assertIn("受阻 1", report)
 
         self.scheduler.memory_probe = lambda: 4096
         self.scheduler.enqueue_event(_event("svc", "A"))
@@ -588,7 +588,7 @@ class SchedulerBehaviorTests(unittest.TestCase):
         self.assertEqual(self._breaker_row(self.scheduler)["failures"], 0)
         self.assertEqual(self._run_rows(self.scheduler)[0]["outcome"], "repaired_unverified")
         body = self.scheduler.create_daily_report("2026-11-08")["body"]
-        self.assertIn("业务已验证成功：0；容器在跑、业务未验证：1；未成功：0", body)
+        self.assertIn("运行 1 次 · 修复 0 · 未验证 1 · 未成功 0 · 需人工 0 · 受阻 0 · 待处理 0", body)
         self.assertIn("已处理(容器在跑,业务未验证)", body)
 
     def test_retention_prunes_only_expired_finished_state(self):

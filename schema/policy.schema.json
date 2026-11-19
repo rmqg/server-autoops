@@ -86,6 +86,22 @@
       "additionalProperties": {
         "$ref": "#/$defs/fault"
       }
+    },
+    "default_targets": {
+      "type": "object",
+      "description": "按告警 service 兜底的授权目标：故障码没有单独映射、或映射里没有 targets 时使用；仍然只授予 services 中 mutable 且非 login_sensitive 的服务。",
+      "propertyNames": {
+        "pattern": "^[A-Za-z0-9_.-]{1,128}$"
+      },
+      "additionalProperties": {
+        "type": "array",
+        "minItems": 1,
+        "uniqueItems": true,
+        "items": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_.-]{1,128}$"
+        }
+      }
     }
   },
   "$defs": {
@@ -192,6 +208,44 @@
           "pattern": "^/",
           "not": {
             "pattern": "(^|/)\\.\\.(/|$)"
+          }
+        },
+        "allowed_operations": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "inspect",
+              "logs",
+              "read_config",
+              "patch_config",
+              "read_file",
+              "patch_file",
+              "start",
+              "restart",
+              "recreate",
+              "run_action",
+              "verify"
+            ]
+          }
+        },
+        "code_roots": {
+          "type": "array",
+          "maxItems": 2,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^/"
+          }
+        },
+        "code_files": {
+          "type": "object",
+          "maxProperties": 16,
+          "propertyNames": {
+            "pattern": "^[A-Za-z0-9_.-]{1,128}$"
+          },
+          "additionalProperties": {
+            "$ref": "#/$defs/code_file"
           }
         }
       }
@@ -331,6 +385,25 @@
         "diagnose_only": {
           "type": "boolean",
           "default": false
+        }
+      }
+    },
+    "code_file": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path"
+      ],
+      "properties": {
+        "path": {
+          "type": "string",
+          "pattern": "^/",
+          "not": {
+            "pattern": "(^|/)\\.\\.(/|$)"
+          }
+        },
+        "description": {
+          "type": "string"
         }
       }
     }

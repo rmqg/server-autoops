@@ -2,6 +2,27 @@
 
 格式参考 Keep a Changelog，版本号遵循语义化版本。
 
+## [0.1.1] - 2026-11-19
+
+把「写死的规则」再拆掉一层：故障码没登记时按组兜底，代码取证/补丁交给 policy 声明，站点相关信息从包里搬出去。
+
+### 新增
+
+- `default_targets`：`faults` 里没写到的故障码，按告警 `service` 回退到一组默认目标，不再一律记「无映射、受阻」。每个服务的 `mutable`/`login_sensitive`、故障的 `needs_scan`/`diagnose_only` 照样生效。
+- 代码取证与补丁：`read_file`、`patch_file`、服务级 `allowed_operations`/`code_roots`/`code_files`。可改的代码根由部署方在服务单元里用 `SERVER_AUTOOPS_CODE_ROOTS` 声明，policy 不能自行扩大。
+- `host_exec` 探针：在宿主上直接执行 policy 写明的 argv（不经 shell），脚本必须 root 属主、非 group/world 可写、不是链接。
+- 智能体结案时提交 `notification_summary`（≤200 字自然语言）；配置 `agent.notification_summary_path` 后可原子发布给下游日报。
+
+### 变更
+
+- 日报正文改成「模型写的一句话结论 + 一行统计」，安静日只发一句；「需人工」「熔断」通知只保留结论与最关键的因果。
+- 微信桌面看门狗去抖：连续 3 次异常、连续 2 次恢复才通知，秒级抖动不再刷屏。
+- 包内不再硬编码任何站点路径（chat-digest 代码根、健康脚本、摘要文件都改为部署方配置）。
+
+### 修复
+
+- 日报把原始长诊断重复灌进推送正文的问题；通知不再复述工具输出与探针名。
+
 ## [0.1.0] - 2026-11-08
 
 第一个公开版本。由作者自用的 NAS 自动运维（内部版本，2026-11-08 审查修订后）整理、通用化而来，使用全新的提交历史。

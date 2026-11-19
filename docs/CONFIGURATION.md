@@ -102,12 +102,19 @@ sudo systemctl restart server-autoops && sudo server-autoops notify-test
 | `agent.model.display_name` | 字符串 | `AutoOps model` | 显示名 | — |
 | `agent.model.context_window` | 整数 | `131072` | 上下文长度 | 按模型实际值 |
 | `agent.model.max_tokens` | 整数 | `8192` | 单次输出上限 | — |
+| `agent.notification_summary_path` | 绝对文件路径 | 不发布 | 可选。配置后，`chat-digest-project` 这类目标结案时把模型写的 `notification_summary` 原子写到这个 600 文件（JSON：`report_day`、`run_id`、`created_at`、`summary`），供下游日报拼接 | 需要把智能体结论喂给自己的日报/看门狗时 |
 
 ### kind = mock
 
 | 参数 | 类型 | 默认 | 含义 |
 |---|---|---|---|
 | `agent.plans` | 对象 | `{}` | `"<service>:<CODE>": [ops 请求, ...]`。模拟智能体先 `inventory`，再依次发送这些请求，最后 `finish`。没有对应计划时只 `inspect` 每个目标。`{"op":"summary","text":"..."}` 设置诊断摘要；`"$sha256:<服务>/<配置别名>"` 换成最近一次 `read_config` 的哈希 |
+
+## 环境变量
+
+| 变量 | 说明 |
+|---|---|
+| `SERVER_AUTOOPS_CODE_ROOTS` | `os.pathsep` 分隔的最多 4 个绝对目录，决定 `read_file`/`patch_file` 能碰的代码根目录上限（policy 里的 `code_roots` 必须是它的子集）。由 root 管理的服务单元设置；不设时没有任何代码根，取证/补丁类操作直接拒绝 |
 
 ## 安装向导的答案文件（install.env）
 
